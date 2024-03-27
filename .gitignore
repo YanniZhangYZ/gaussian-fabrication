@@ -1,4 +1,13 @@
 *.pyc
+*.png
+*.exr
+*.vol
+*.ply
+*.npy
+.DS_Store
+ply_convert/lego_Car
+ply_convert/handcrafted
+ply_convert/handcrafted_old
 .vscode
 output
 build
