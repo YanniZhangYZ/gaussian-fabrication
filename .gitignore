@@ -2,7 +2,6 @@
 *.png
 *.exr
 *.vol
-*.ply
 *.npy
 .DS_Store
 ply_convert/lego_Car
