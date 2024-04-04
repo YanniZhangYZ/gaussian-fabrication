@@ -20,6 +20,7 @@ from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
+import numpy as np
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
@@ -57,16 +58,33 @@ def render_two_blobs(dataset : ModelParams, iteration : int, pipeline : Pipeline
         print("using background color: ", bg_color)
 
         model_path = dataset.model_path
-        name = "2_blobs"
         iteration = scene.loaded_iter
         views = scene.getTrainCameras()
 
         render_path = os.path.join(model_path, "renders")
         makedirs(render_path, exist_ok=True)
 
-        for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-            rendering = render(view, gaussians, pipeline, background)["render"]
-            torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+
+        # view_idx = 32
+        view_idx = 26
+        print("Rendering progress")
+        result = render(views[view_idx], gaussians, pipeline, background)
+        rendering = result["render"]
+        final_ink_mix = result["final_ink_mix"]
+
+
+        print("color: ", rendering.shape)
+        print("final_ink_mix: ", final_ink_mix.shape)
+        print(torch.count_nonzero(rendering,dim=(1,2)))
+        print(torch.count_nonzero(final_ink_mix,dim=(1,2)))
+
+
+        np.save('Two_blobs/renders/final_ink_mix.npy', final_ink_mix.cpu().detach().numpy())
+        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(view_idx) + ".png"))
+
+        # for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+        #     rendering = render(view, gaussians, pipeline, background)["render"]
+        #     torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
 
 
 # if __name__ == "__main__":
@@ -91,6 +109,7 @@ if __name__ == "__main__":
 
     '''
         python render.py -m Two_blobs/ -w --iteration 1000 --sh_degree 0
+        python render.py -m Two_blobs/ --iteration 1000 --sh_degree 0
     '''
 
 

@@ -47,6 +47,7 @@ class GaussianModel:
         self._xyz = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
+        self._ink_mix = torch.empty(0) # NOTE
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
@@ -109,6 +110,10 @@ class GaussianModel:
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
+    
+    @property
+    def get_ink_mix(self):  # NOTE
+        return self._ink_mix
     
     @property
     def get_opacity(self):
@@ -220,6 +225,10 @@ class GaussianModel:
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
 
+        ink_mix = np.zeros((2, 6))
+        ink_mix[0,:] = np.asarray([0.0000, 0.5107, 0.4893, 0.0000, 0.0000, 0.0000]) # NOTE: red blob ink concentration
+        ink_mix[1,:] = np.asarray([0.2231, 0.0000, 0.7769, 0.0000, 0.0000, 0.0000]) # NOTE: red blob ink concentration
+
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
@@ -252,6 +261,8 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+
+        self._ink_mix = nn.Parameter(torch.tensor(ink_mix, dtype=torch.float, device="cuda").requires_grad_(True)) # NOTE
 
         self.active_sh_degree = self.max_sh_degree
 
