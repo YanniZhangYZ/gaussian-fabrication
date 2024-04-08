@@ -1,1 +1,1 @@
-Namespace(data_device='cuda', eval=False, images='images', model_path='./output/b2a8fe67-a', resolution=-1, sh_degree=0, source_path='/media/yifayu/TU100Pro/gaussian-painters/lego', white_background=False)
+Namespace(data_device='cuda', eval=False, images='images', model_path='./output/b2a8fe67-a', resolution=-1, sh_degree=0, source_path='/media/yifayu/TU100Pro/YanniThesis/gaussian-fabrication/lego', white_background=False)

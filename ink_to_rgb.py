@@ -6,10 +6,10 @@ import matplotlib.image
 import torch
 
 ink_intrinsic = json.load(open('ink_intrinsic.json'))
-# mix = np.load('Two_blobs/renders/final_ink_mix.npy')
-mix = np.zeros((6, 800, 800))
-recipe = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])/3.0
-mix += recipe[:,None,None]
+mix = np.load('Two_blobs_torch/renders/final_ink_mix.npy')
+# mix = np.zeros((6, 800, 800))
+# recipe = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])/3.0
+# mix += recipe[:,None,None]
 
 back_ground_mask =np.all(mix == 0.0, axis=0).astype(int)
 
@@ -20,7 +20,7 @@ transparent_mask = 1.0 - mix.sum(axis=0)
 transparent_blob_mask = blob_mask - mix.sum(axis=0)
 
 # mix[5,:,:] = transparent_blob_mask # fake transparent ink concentration
-# mix[4,:,:] = transparent_mask # fake white ink concentration
+mix[4,:,:] = transparent_mask # fake white ink concentration
 
 C, H, W = mix.shape
 print(C, H, W)
