@@ -18,6 +18,7 @@ from gsplat.rasterize import rasterize_gaussians
 import numpy as np
 from PIL import Image   
 import torch.nn.functional as F
+import torchvision
 
 
 try:
@@ -32,13 +33,17 @@ INK = Ink()
 
 
 def ink_to_RGB(mix):
-    back_ground_mask =torch.all(mix == 0.0, axis=0).astype(int)
+    back_ground_mask =torch.all(mix == 0.0, axis=0).int()
     blob_mask = 1 - back_ground_mask
     transparent_mask = 1.0 - mix.sum(axis=0)
     transparent_blob_mask = blob_mask - mix.sum(axis=0)
-    mix[4,:,:] = transparent_mask # fake white ink concentration
+    # NOTE: The training image has transparent background!
+    # NOTE: Therefore we add white ink only to the place where has blob!
+    # mix[4,:,:] = mix[4,:,:] + transparent_mask  # This is used in the original ink_to_rgb.py file
+    mix[4,:,:] = mix[4,:,:] + transparent_blob_mask
+
     C, H, W = mix.shape
-    mix = mix.transpose(1,2,0).reshape(-1,C)
+    mix = mix.permute(1,2,0).view(-1,C)
     
     # mix: (H*W,6) array of ink mixtures
     # K
@@ -71,20 +76,21 @@ def ink_to_RGB(mix):
     # Convert XYZ to sRGB, Equation 7
     sRGB_matrix = torch.tensor([[3.2406, -1.5372, -0.4986],
                             [-0.9689, 1.8758, 0.0415],
-                            [0.0557, -0.2040, 1.0570]])
+                            [0.0557, -0.2040, 1.0570]], device="cuda")
     sRGB = ((sRGB_matrix @ XYZ) / Y_D56).T
-    sRGB = torch.clip(sRGB,0,1).view(16, 16, 3).permute(2,0,1)
+    sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
     return sRGB
 
 
 
-def image_path_to_tensor(image_path = 'ink_RGB_torch_GT.png'):
+def image_path_to_tensor(image_path):
     import torchvision.transforms as transforms
 
     img = Image.open(image_path)
     transform = transforms.ToTensor()
-    img_tensor = transform(img).permute(1, 2, 0)[..., :3]
-    return img_tensor
+    img_tensor = transform(img).permute(1, 2, 0)[..., :3] # Original gsplat: Here it is in shape H, W, 3
+    img_tensor = img_tensor.permute(2, 0, 1) # For our optimization implementation, we need 3, H, W
+    return img_tensor.to("cuda")
 
 
 from kornia.color import rgb_to_lab
@@ -92,23 +98,23 @@ import math
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 def loss_ink_mix(mix, gt_rgb):
-    HW, C = mix.shape
-    H = W = int(math.sqrt(HW))
+    
+    C, H, W = mix.shape
     mix = F.relu(mix)
     epsilon = 1e-8
     mix = mix / (mix.sum(dim=1, keepdim=True) + epsilon)
     current_render = ink_to_RGB(mix)
-    loss_mse = torch.nn.MSELoss(current_render, gt_rgb)
+
+    loss_mse = F.mse_loss(current_render, gt_rgb)
 
     lab_GT = rgb_to_lab(gt_rgb.reshape(1, 3, H , W)).reshape(H, W,3)
     lab_image = rgb_to_lab(current_render.reshape(1, 3, H,W)).reshape(H,W,3)
     delta_e76 = torch.sqrt(torch.sum((lab_image - lab_GT)**2, dim=(0, 1))/(H*W))
     loss_delta_e76 = torch.mean(delta_e76)
 
-    ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
-    loss_ssim = ssim(current_render.reshape(1,3, 16, 16), gt_rgb.reshape(1,3, 16, 16))
-
-    return 0.2* loss_ssim + 0.7 * loss_mse + 0.1 * loss_delta_e76
+    ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to("cuda")
+    loss_ssim = ssim(current_render.reshape(1,3, H, W), gt_rgb.reshape(1,3, H, W))
+    return 0.2* loss_ssim + 0.7 * loss_mse + 0.1 * loss_delta_e76, current_render
 
      
 
@@ -117,7 +123,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     lr = 0.01
     gaussians = GaussianModel(0)
     scene = Scene(dataset, gaussians)
-    gaussians.training_setup(opt)
+    # gaussians.training_setup(opt)
 
     bg_color = [0, 0, 0, 0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -125,7 +131,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    return 0
 
      # set up rasterization configuration
     views = scene.getTrainCameras()
@@ -135,13 +140,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     image_width=int(viewpoint_camera.image_width)
     fy = fov2focal(viewpoint_camera.FoVy, image_height)
     fx = fov2focal(viewpoint_camera.FoVx, image_width)
-    # viewmatrix=viewpoint_camera.world_view_transform
-    projmatrix=viewpoint_camera.full_proj_transform
-
-    viewmatrix =getWorld2View(viewpoint_camera.R, viewpoint_camera.T)
-    viewmatrix = torch.tensor(viewmatrix, dtype=torch.float32, device="cuda")
-
-
 
     l = [
         {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
@@ -151,12 +149,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         {'params': [gaussians._rotation], 'lr': lr, "name": "rotation"}
     ]
 
-    optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15) 
+    optimizer = torch.optim.Adam(l, lr=0.01, eps=1e-15) 
     frames = []
     B_SIZE = 16
 
-    gt_img = image_path_to_tensor()
-    for i in range(iterations):
+    #  TODO
+    gt_img = image_path_to_tensor('lego/train/r_25.png')
+
+
+    for i in range(opt.iterations):
         (
             xys,
             depths,
@@ -170,7 +171,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             scales = gaussians.get_scaling,
             glob_scale = 1,
             quats = gaussians.get_rotation,
-            viewmat = viewmatrix,
+            viewmat = viewpoint_camera.world_view_transform.T,
             fx = fx,
             fy = fy,
             cx = image_height/2,
@@ -197,15 +198,22 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         
         final_ink_mix = ink_mix .permute(2, 0, 1)
 
-        out_img = ink_to_RGB(final_ink_mix)
+        # print("final_ink_mix: ", final_ink_mix[:, int(final_ink_mix.shape[1]/2), int(final_ink_mix.shape[2]/2)])
+
+        # out_img = ink_to_RGB(final_ink_mix)
+        # torchvision.utils.save_image(torch.tensor(out_img), "ink_torch.png")
+
+
+
+        # return 0
         torch.cuda.synchronize()
-        loss = mse_loss(out_img, gt_img)
+        loss, out_img = loss_ink_mix(final_ink_mix, gt_img)
         optimizer.zero_grad()
         loss.backward()
         torch.cuda.synchronize()
         optimizer.step()
-        print(f"Iteration {iter + 1}/{iterations}, Loss: {loss.item()}")
-        if save_imgs and iter % 5 == 0:
+        print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
+        if save_imgs and i  % 5 == 0:
                 frames.append((out_img.detach().cpu().numpy() * 255).astype(np.uint8))
 
     if save_imgs:
