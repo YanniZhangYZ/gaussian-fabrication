@@ -5,6 +5,8 @@ import torchvision
 import matplotlib.image
 import torch
 
+from ink_intrinsics import Ink
+
 ink_intrinsic = json.load(open('ink_intrinsic.json'))
 mix = np.load('Two_blobs_torch/renders/final_ink_mix.npy')
 # mix = np.zeros((6, 800, 800))
@@ -29,40 +31,42 @@ print(C, H, W)
 
 mix = mix.transpose(1,2,0).reshape(-1,C)
 
-wavelength = np.array(ink_intrinsic["wavelength"])
-C_absorption = np.array(ink_intrinsic["C_absorption"])
-M_absorption = np.array(ink_intrinsic["M_absorption"])
-Y_absorption = np.array(ink_intrinsic["Y_absorption"])
-K_absorption = np.array(ink_intrinsic["K_absorption"])
-# W_absorption = np.array(ink_intrinsic["W_absorption"])
-W_absorption = np.zeros_like(C_absorption) # Fake perfect white ink data
-T_absorption = np.zeros_like(C_absorption) # Fake perfect transparent ink data
+# wavelength = np.array(ink_intrinsic["wavelength"])
+# C_absorption = np.array(ink_intrinsic["C_absorption"])
+# M_absorption = np.array(ink_intrinsic["M_absorption"])
+# Y_absorption = np.array(ink_intrinsic["Y_absorption"])
+# K_absorption = np.array(ink_intrinsic["K_absorption"])
+# # W_absorption = np.array(ink_intrinsic["W_absorption"])
+# W_absorption = np.zeros_like(C_absorption) # Fake perfect white ink data
+# T_absorption = np.zeros_like(C_absorption) # Fake perfect transparent ink data
 
-absorption_matrix = np.array([C_absorption, M_absorption, Y_absorption, K_absorption, W_absorption, T_absorption])
+# absorption_matrix = np.array([C_absorption, M_absorption, Y_absorption, K_absorption, W_absorption, T_absorption])
 
-C_scattering = np.array(ink_intrinsic["C_scattering"])
-M_scattering = np.array(ink_intrinsic["M_scattering"])
-Y_scattering = np.array(ink_intrinsic["Y_scattering"])
-K_scattering = np.array(ink_intrinsic["K_scattering"])
-W_scattering = np.array(ink_intrinsic["W_scattering"])
-T_scattering = np.zeros_like(C_scattering) + 1e-4 # Fake perfect transparent ink data
+# C_scattering = np.array(ink_intrinsic["C_scattering"])
+# M_scattering = np.array(ink_intrinsic["M_scattering"])
+# Y_scattering = np.array(ink_intrinsic["Y_scattering"])
+# K_scattering = np.array(ink_intrinsic["K_scattering"])
+# W_scattering = np.array(ink_intrinsic["W_scattering"])
+# T_scattering = np.zeros_like(C_scattering) + 1e-4 # Fake perfect transparent ink data
 
-scattering_matrix = np.array([C_scattering, M_scattering, Y_scattering, K_scattering, W_scattering, T_scattering])
-
-
-
-# Fetch the D65 illuminant spectral power distribution
-illuminant_D65_spd = colour.SDS_ILLUMINANTS['D65']
-sampled_illuminant_D65 = np.array([illuminant_D65_spd[w] for w in wavelength])
+# scattering_matrix = np.array([C_scattering, M_scattering, Y_scattering, K_scattering, W_scattering, T_scattering])
 
 
 
-# Fetch the CIE 1931 2-degree Standard Observer Color Matching Functions
-cmfs = colour.STANDARD_OBSERVERS_CMFS['CIE 1931 2 Degree Standard Observer']
-# Sample the color matching functions at these wavelengths
-x_observer = np.array([cmfs[w][0] for w in wavelength])
-y_observer = np.array([cmfs[w][1] for w in wavelength])
-z_observer = np.array([cmfs[w][2] for w in wavelength])
+# # Fetch the D65 illuminant spectral power distribution
+# illuminant_D65_spd = colour.SDS_ILLUMINANTS['D65']
+# sampled_illuminant_D65 = np.array([illuminant_D65_spd[w] for w in wavelength])
+
+
+
+# # Fetch the CIE 1931 2-degree Standard Observer Color Matching Functions
+# cmfs = colour.STANDARD_OBSERVERS_CMFS['CIE 1931 2 Degree Standard Observer']
+# # Sample the color matching functions at these wavelengths
+# x_observer = np.array([cmfs[w][0] for w in wavelength])
+# y_observer = np.array([cmfs[w][1] for w in wavelength])
+# z_observer = np.array([cmfs[w][2] for w in wavelength])
+
+INK = Ink(use_torch=False)
 
 
 def ink_to_rgb():
@@ -70,9 +74,9 @@ def ink_to_rgb():
     # print(sampled_illuminant_D65.sum())
     # mix: (H*W,6) array of ink mixtures
     # K
-    mix_K = mix @ absorption_matrix + 1e-10
+    mix_K = mix @ INK.absorption_matrix + 1e-10
     # S
-    mix_S = mix @ scattering_matrix + 1e-10
+    mix_S = mix @ INK.scattering_matrix + 1e-10
     #equation 2
     R_mix = 1 + mix_K / mix_S - np.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)
     # Saunderson’s correction reflectance coefficient, commonly used values
@@ -82,18 +86,18 @@ def ink_to_rgb():
     R_mix = (1-k1) * (1 - k2) * R_mix / (1 - k2 * R_mix)
 
     # equation 3 - 5
-    x_D56 = x_observer * sampled_illuminant_D65
+    x_D56 = INK.x_observer * INK.sampled_illuminant_D65
     # x_D56 /= np.sum(x_D56)
-    y_D56 = y_observer * sampled_illuminant_D65
+    y_D56 = INK.y_observer * INK.sampled_illuminant_D65
     # y_D56 /= np.sum(y_D56)
-    z_D56 = z_observer * sampled_illuminant_D65
+    z_D56 = INK.z_observer * INK.sampled_illuminant_D65
     # z_D56 /= np.sum(z_D56)
     X = R_mix @ x_D56
     Y = R_mix @ y_D56
     Z = R_mix @ z_D56
 
     XYZ = np.stack([X,Y,Z],axis=1).T
-    Y_D56 = np.sum(sampled_illuminant_D65 * y_observer)
+    Y_D56 = np.sum(INK.sampled_illuminant_D65 * INK.y_observer)
     
     # Convert XYZ to sRGB, Equation 7
     sRGB_matrix = np.array([[3.2406, -1.5372, -0.4986],

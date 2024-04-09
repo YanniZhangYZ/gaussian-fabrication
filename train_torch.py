@@ -12,12 +12,13 @@ from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.graphics_utils import fov2focal, getWorld2View, getWorld2View2
+from ink_intrinsics import Ink
 from gsplat.project_gaussians import project_gaussians
 from gsplat.rasterize import rasterize_gaussians
-import json
-import colour
 import numpy as np
-from PIL import Image
+from PIL import Image   
+import torch.nn.functional as F
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -26,45 +27,8 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 
-ink_intrinsic = json.load(open('ink_intrinsic.json'))
-wavelength = np.array(ink_intrinsic["wavelength"])
-C_absorption = np.array(ink_intrinsic["C_absorption"])
-M_absorption = np.array(ink_intrinsic["M_absorption"])
-Y_absorption = np.array(ink_intrinsic["Y_absorption"])
-K_absorption = np.array(ink_intrinsic["K_absorption"])
-# W_absorption = np.array(ink_intrinsic["W_absorption"])
-W_absorption = np.zeros_like(C_absorption) # Fake perfect white ink data
-T_absorption = np.zeros_like(C_absorption) # Fake perfect transparent ink data
-
-absorption_matrix = np.array([C_absorption, M_absorption, Y_absorption, K_absorption, W_absorption, T_absorption])
-absorption_matrix = torch.tensor(absorption_matrix, dtype=torch.float32, device="cuda")
-
-
-C_scattering = np.array(ink_intrinsic["C_scattering"])
-M_scattering = np.array(ink_intrinsic["M_scattering"])
-Y_scattering = np.array(ink_intrinsic["Y_scattering"])
-K_scattering = np.array(ink_intrinsic["K_scattering"])
-W_scattering = np.array(ink_intrinsic["W_scattering"])
-T_scattering = np.zeros_like(C_scattering) + 1e-4 # Fake perfect transparent ink data
-
-scattering_matrix = np.array([C_scattering, M_scattering, Y_scattering, K_scattering, W_scattering, T_scattering])
-scattering_matrix = torch.tensor(scattering_matrix, dtype=torch.float32, device="cuda")
-
-
-# Fetch the D65 illuminant spectral power distribution
-illuminant_D65_spd = colour.SDS_ILLUMINANTS['D65']
-sampled_illuminant_D65 = np.array([illuminant_D65_spd[w] for w in wavelength])
-sampled_illuminant_D65 = torch.tensor(sampled_illuminant_D65, dtype=torch.float32, device="cuda")
-
-
-
-# Fetch the CIE 1931 2-degree Standard Observer Color Matching Functions
-cmfs = colour.STANDARD_OBSERVERS_CMFS['CIE 1931 2 Degree Standard Observer']
-# Sample the color matching functions at these wavelengths
-x_observer = torch.tensor([cmfs[w][0] for w in wavelength], dtype=torch.float32, device="cuda")
-y_observer = torch.tensor([cmfs[w][1] for w in wavelength], dtype=torch.float32, device="cuda")
-z_observer = torch.tensor([cmfs[w][2] for w in wavelength], dtype=torch.float32, device="cuda")
-
+# Load ink intrinsic data
+INK = Ink()
 
 
 def ink_to_RGB(mix):
@@ -75,10 +39,12 @@ def ink_to_RGB(mix):
     mix[4,:,:] = transparent_mask # fake white ink concentration
     C, H, W = mix.shape
     mix = mix.transpose(1,2,0).reshape(-1,C)
-
-    mix_K = mix @ absorption_matrix + 1e-8
+    
+    # mix: (H*W,6) array of ink mixtures
+    # K
+    mix_K = mix @ INK.absorption_matrix + 1e-8
     # S
-    mix_S = mix @ scattering_matrix + 1e-8
+    mix_S = mix @ INK.scattering_matrix + 1e-8
     #equation 2
     R_mix = 1 + mix_K / mix_S - torch.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)
     # Saunderson’s correction reflectance coefficient, commonly used values
@@ -89,11 +55,11 @@ def ink_to_RGB(mix):
 
 
     # equation 3 - 5
-    x_D56 = x_observer * sampled_illuminant_D65
+    x_D56 = INK.x_observer * INK.sampled_illuminant_D65
     # x_D56 /= np.sum(x_D56)
-    y_D56 = y_observer * sampled_illuminant_D65
+    y_D56 = INK.y_observer * INK.sampled_illuminant_D65
     # y_D56 /= np.sum(y_D56)
-    z_D56 = z_observer * sampled_illuminant_D65
+    z_D56 = INK.z_observer * INK.sampled_illuminant_D65
     # z_D56 /= np.sum(z_D56)
     X = R_mix @ x_D56
     Y = R_mix @ y_D56
@@ -102,7 +68,7 @@ def ink_to_RGB(mix):
     XYZ = torch.stack([X,Y,Z],axis=1).T
     Y_D56 = torch.sum(y_D56)
 
-        # Convert XYZ to sRGB, Equation 7
+    # Convert XYZ to sRGB, Equation 7
     sRGB_matrix = torch.tensor([[3.2406, -1.5372, -0.4986],
                             [-0.9689, 1.8758, 0.0415],
                             [0.0557, -0.2040, 1.0570]])
@@ -121,13 +87,36 @@ def image_path_to_tensor(image_path = 'ink_RGB_torch_GT.png'):
     return img_tensor
 
 
+from kornia.color import rgb_to_lab
+import math
+from torchmetrics.image import StructuralSimilarityIndexMeasure
+
+def loss_ink_mix(mix, gt_rgb):
+    HW, C = mix.shape
+    H = W = int(math.sqrt(HW))
+    mix = F.relu(mix)
+    epsilon = 1e-8
+    mix = mix / (mix.sum(dim=1, keepdim=True) + epsilon)
+    current_render = ink_to_RGB(mix)
+    loss_mse = torch.nn.MSELoss(current_render, gt_rgb)
+
+    lab_GT = rgb_to_lab(gt_rgb.reshape(1, 3, H , W)).reshape(H, W,3)
+    lab_image = rgb_to_lab(current_render.reshape(1, 3, H,W)).reshape(H,W,3)
+    delta_e76 = torch.sqrt(torch.sum((lab_image - lab_GT)**2, dim=(0, 1))/(H*W))
+    loss_delta_e76 = torch.mean(delta_e76)
+
+    ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
+    loss_ssim = ssim(current_render.reshape(1,3, 16, 16), gt_rgb.reshape(1,3, 16, 16))
+
+    return 0.2* loss_ssim + 0.7 * loss_mse + 0.1 * loss_delta_e76
+
+     
 
 
 def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_imgs=True):
-    iterations = 1000
     lr = 0.01
     gaussians = GaussianModel(0)
-    scene = Scene(dataset, gaussians, load_iteration=1000, shuffle=False)
+    scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
 
     bg_color = [0, 0, 0, 0, 0, 0]
@@ -135,6 +124,8 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
+
+    return 0
 
      # set up rasterization configuration
     views = scene.getTrainCameras()
@@ -161,7 +152,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     ]
 
     optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15) 
-    mse_loss = torch.nn.MSELoss()
     frames = []
     B_SIZE = 16
 
@@ -237,7 +227,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
-    lp = ModelParams(parser, sentinel=True)
+    lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
