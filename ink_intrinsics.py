@@ -65,7 +65,9 @@ class Ink(nn.Module):
 
 
         # Fetch the CIE 1931 2-degree Standard Observer Color Matching Functions
-        cmfs = colour.STANDARD_OBSERVERS_CMFS['CIE 1931 2 Degree Standard Observer']
+        # cmfs = colour.STANDARD_OBSERVERS_CMFS['CIE 1931 2 Degree Standard Observer']
+        cmfs = colour.colorimetry.MSDS_CMFS_STANDARD_OBSERVER['CIE 1931 2 Degree Standard Observer']
+
         # Sample the color matching functions at these wavelengths
         self.x_observer = np.array([cmfs[w][0] for w in self.wavelength])
         self.y_observer = np.array([cmfs[w][1] for w in self.wavelength])
