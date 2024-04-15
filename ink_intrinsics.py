@@ -10,24 +10,49 @@ class Ink(nn.Module):
         super(Ink, self).__init__()
         self.device = device
 
-        ink_intrinsic = json.load(open('ink_intrinsic.json'))
-        self.wavelength = np.array(ink_intrinsic["wavelength"])
 
-        C_absorption = np.array(ink_intrinsic["C_absorption"])
-        M_absorption = np.array(ink_intrinsic["M_absorption"])
-        Y_absorption = np.array(ink_intrinsic["Y_absorption"])
-        K_absorption = np.array(ink_intrinsic["K_absorption"])
+        absorption_file = "ink_meta/absorbtion_K.csv"
+        scattering_file = "ink_meta/scattering_S.csv"
+        wavelength_file = "ink_meta/spectral_samples.csv"
+
+        # 1: K, 2:C 3:M, 4:Y, 5: W
+        absorption_matrix = np.genfromtxt(absorption_file, delimiter=',') # they are not in the order of CMYKW
+        scattering_matrix = np.genfromtxt(scattering_file, delimiter=',')
+        wavelength = np.genfromtxt(wavelength_file, delimiter=',')
+
+        # num_inks = absorption_matrix.shape[0]
+        
+        # self.wavelength = wavelength
+        # W_absorption = np.zeros_like(absorption_matrix[0]) # Fake perfect white ink data
+        # T_absorption = np.zeros_like(absorption_matrix[0]) # Fake perfect transparent ink data
+
+        # print(W_absorption.shape)
+        # print(absorption_matrix.shape)
+
+        
+        # self.absorption_matrix = np.vstack([absorption_matrix[:num_inks-1,:], W_absorption, T_absorption])
+        # print(self.absorption_matrix.shape)
+
+        # return None
+
+        ink_intrinsic = json.load(open('ink_meta/ink_intrinsic.json'))
+        self.wavelength = wavelength
+
+        C_absorption = absorption_matrix[1]
+        M_absorption = absorption_matrix[2]
+        Y_absorption = absorption_matrix[3]
+        K_absorption = absorption_matrix[0]
         # W_absorption = np.array(ink_intrinsic["W_absorption"])
         W_absorption = np.zeros_like(C_absorption) # Fake perfect white ink data
         T_absorption = np.zeros_like(C_absorption) # Fake perfect transparent ink data
         
         self.absorption_matrix = np.array([C_absorption, M_absorption, Y_absorption, K_absorption, W_absorption, T_absorption])
 
-        C_scattering = np.array(ink_intrinsic["C_scattering"])
-        M_scattering = np.array(ink_intrinsic["M_scattering"])
-        Y_scattering = np.array(ink_intrinsic["Y_scattering"])
-        K_scattering = np.array(ink_intrinsic["K_scattering"])
-        W_scattering = np.array(ink_intrinsic["W_scattering"])
+        C_scattering = scattering_matrix[1]
+        M_scattering = scattering_matrix[2]
+        Y_scattering = scattering_matrix[3]
+        K_scattering = scattering_matrix[0]
+        W_scattering = scattering_matrix[4]
         T_scattering = np.zeros_like(C_scattering) + 1e-4 # Fake perfect transparent ink data
 
         self.scattering_matrix = np.array([C_scattering, M_scattering, Y_scattering, K_scattering, W_scattering, T_scattering])
@@ -62,3 +87,5 @@ class Ink(nn.Module):
 def RGB2INK():
     #TODO: Implement RGB2INK
     return 0
+
+Ink()

@@ -20,6 +20,7 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+import torch.nn.functional as F
 
 class GaussianModel:
 
@@ -29,6 +30,9 @@ class GaussianModel:
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
             return symm
+
+        def ink_norm(x):
+            return F.softmax(x, dim=-1).clamp(0.0, 1.0)
         
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -38,7 +42,8 @@ class GaussianModel:
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
 
-        self.rotation_activation = torch.nn.functional.normalize
+        self.rotation_activation = F.normalize
+        self.ink_activation = ink_norm
 
 
     def __init__(self, sh_degree : int):
@@ -65,6 +70,7 @@ class GaussianModel:
             self._xyz,
             self._features_dc,
             self._features_rest,
+            self._ink_mix,
             self._scaling,
             self._rotation,
             self._opacity,
@@ -80,6 +86,7 @@ class GaussianModel:
         self._xyz, 
         self._features_dc, 
         self._features_rest,
+        self._ink_mix,
         self._scaling, 
         self._rotation, 
         self._opacity,
@@ -113,7 +120,7 @@ class GaussianModel:
     
     @property
     def get_ink_mix(self):  # NOTE
-        return self._ink_mix
+        return self.ink_activation(self._ink_mix)
     
     @property
     def get_opacity(self):
@@ -129,10 +136,10 @@ class GaussianModel:
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
-        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-        features[:, :3, 0 ] = fused_color
-        features[:, 3:, 1:] = 0.0
+        # fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        # features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        # features[:, :3, 0 ] = fused_color
+        # features[:, 3:, 1:] = 0.0
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
@@ -144,7 +151,9 @@ class GaussianModel:
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         #  NOTE: HERE!!!!!!!!!
-        ink_mix = torch.ones((fused_point_cloud.shape[0], 6), device="cuda") / 6.0
+        ink_mix = torch.zeros((fused_point_cloud.shape[0], 6), dtype=torch.float, device="cuda")
+        ink_mix = ink_mix + torch.tensor([0.1, 0.1, 0.1, 0.1, 0.5, 0.1], dtype=torch.float, device="cuda")
+        
         
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))

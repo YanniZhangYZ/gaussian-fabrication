@@ -7,7 +7,7 @@ import torch
 
 from ink_intrinsics import Ink
 
-ink_intrinsic = json.load(open('ink_intrinsic.json'))
+ink_intrinsic = json.load(open('ink_meta/ink_intrinsic.json'))
 mix = np.load('Two_blobs_torch/renders/final_ink_mix.npy')
 # mix = np.zeros((6, 800, 800))
 # recipe = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])/3.0
@@ -112,8 +112,6 @@ def ink_to_rgb():
     print(sRGB[:, int(H/2), int(W/2)])
     # print(transparent_mask.shape)
     torchvision.utils.save_image(torch.tensor(sRGB), "ink_RGB.png")
-
-
 
 import torch
 import torch.nn as nn
