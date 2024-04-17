@@ -20,6 +20,9 @@ from PIL import Image
 import torch.nn.functional as F
 import torchvision
 from utils.loss_utils import l1_loss, ssim
+from train import prepare_output_and_logger
+
+from mitsuba_conversion import debug_plot_g
 
 
 try:
@@ -31,6 +34,20 @@ except ImportError:
 
 # Load ink intrinsic data
 INK = Ink()
+
+
+def debug_plot(pos, debug_color, debug_alpha, path):
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlabel('X axis')
+    ax.set_ylabel('Y axis')
+    ax.set_zlabel('Z axis')
+    ax.set_title('3D Voxel Data')
+    print("Ploting voxel representation")
+    rgba = np.concatenate((debug_color.reshape(-1, 3), debug_alpha.reshape(-1, 1)), axis=1)
+    ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=rgba, s=1.0)
+    plt.savefig(path)
 
 
 def ink_to_RGB(mix, H, W):
@@ -60,15 +77,16 @@ def ink_to_RGB(mix, H, W):
     mix_S = mix @ INK.scattering_matrix + 1e-8
 
     #equation 2
-    R_mix = 1 + mix_K / mix_S - torch.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)
+    # NOTE: Here we add 1e-8 just to make sure it is differentiable (sqrt(0) has no grad)
+    R_mix = 1 + mix_K / mix_S - torch.sqrt((mix_K / mix_S)**2 + 2 * mix_K / mix_S + 1e-8)
 
     if torch.isnan(torch.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)).any():
-            temp = (mix_K / mix_S)**2 + 2 * mix_K / mix_S
-            mask = torch.nonzero(torch.isnan(torch.sqrt( temp)))
-            # print(R_mix.shape)
-            print(mask)
-            print(temp[mask[0]])
-            assert False, "sqrt negative value has nan"
+        temp = (mix_K / mix_S)**2 + 2 * mix_K / mix_S
+        mask = torch.nonzero(torch.isnan(torch.sqrt(temp)))
+        # print(R_mix.shape)
+        print(mask)
+        print(temp[mask[0]])
+        assert False, "sqrt negative value has nan"
 
     # Saunderson’s correction reflectance coefficient, commonly used values
     k1 = 0.04
@@ -117,14 +135,15 @@ from kornia.color import rgb_to_lab
 import math
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
-def loss_ink_mix(mix, viewpoint_cam):
+def loss_ink_mix(mix, out_alpha, viewpoint_cam):
     
     C, H, W = mix.shape
     # mix = F.relu(mix)
     # print(mix.shape)
 
-    #TODO
-    if (mix.sum(dim=0) > 1.0 + 1e-2).any() :
+    #TODO: deal with error in the future
+    if (mix.sum(dim=0) > 1.0 + 1e-1).any():
+        print(mix.sum(dim=0).max())
         raise RuntimeError("TODO: normalize the ink")
 
 
@@ -149,7 +168,20 @@ def loss_ink_mix(mix, viewpoint_cam):
     # loss_mse = F.mse_loss(current_render, gt_rgb)
 
     gt_image = viewpoint_cam.original_image.cuda()
+    # original_GT= Image.open('lego/train/r_25.png')
+    # origin_GT_RGBA = np.array(original_GT.convert("RGBA"))/ 255.0
+    # alpha = torch.tensor(origin_GT_RGBA[:, :, 3:4], dtype=torch.float32, device="cuda")
+    # # print("I got GT alpha!", out_alpha.shape, alpha.shape)
+    # out_alpha = out_alpha.view(H, W, 1).permute(2, 0, 1)
+    # alpha = alpha.view(H, W, 1).permute(2, 0, 1)
+    # assert out_alpha.shape == alpha.shape, (out_alpha.shape, alpha.shape)
+
+    # # Here we are compute loss between RGBA not just RGB
+    # render_rgba = torch.cat([current_render, out_alpha], dim=0)
+    # gt_rgba = torch.cat([gt_image, alpha], dim=0)
+    # Ll1 = l1_loss(render_rgba, gt_rgba)
     Ll1 = l1_loss(current_render, gt_image)
+
     loss = (1.0 - 0.2) * Ll1 + 0.2 * (1.0 - ssim(current_render, gt_image))
 
     # lab_GT = rgb_to_lab(gt_rgb.reshape(1, 3, H , W)).reshape(H, W,3)
@@ -166,13 +198,17 @@ def loss_ink_mix(mix, viewpoint_cam):
      
 
 
-def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_imgs=True):
+def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_imgs=False):
+    tb_writer = prepare_output_and_logger(dataset)
     lr = 0.01
     gaussians = GaussianModel(0)
     scene = Scene(dataset, gaussians, shuffle = False) # TODO: should change to True during training
     # gaussians.training_setup(opt)
 
-    bg_color = [0, 0, 0, 0, 0, 0]
+    print("!!!!!!!Loaded scene with {} gaussians".format(gaussians.get_xyz.shape[0]))
+
+
+    bg_color = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # CMYKWT the backgroud is fully black ink
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
@@ -180,13 +216,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
      # set up rasterization configuration
-    views = scene.getTrainCameras()
-    view_idx = 26
-    viewpoint_camera = views[view_idx]
-    image_height=int(viewpoint_camera.image_height)
-    image_width=int(viewpoint_camera.image_width)
-    fy = fov2focal(viewpoint_camera.FoVy, image_height)
-    fx = fov2focal(viewpoint_camera.FoVx, image_width)
+    # views = scene.getTrainCameras()
+    # view_idx = 26
+    # viewpoint_camera = views[view_idx]
+    # image_height=int(viewpoint_camera.image_height)
+    # image_width=int(viewpoint_camera.image_width)
+    # fy = fov2focal(viewpoint_camera.FoVy, image_height)
+    # fx = fov2focal(viewpoint_camera.FoVx, image_width)
+
+    # print("GT 000 :", viewpoint_camera.original_image.cuda()[:, 0, 0])
 
     l = [
         {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
@@ -203,16 +241,17 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     #  TODO
     # gt_img = image_path_to_tensor('lego/train/r_25.png')
     
+    viewpoint_stack = None
+    # torch.autograd.set_detect_anomaly(True)
 
     for i in range(opt.iterations):
-
-        
-        
         #TODO
         if not (gaussians.get_rotation.norm(dim=-1) - 1 < 1e-6).all():
-            nan_mask = torch.isnan(gaussians.get_rotation.norm(dim=-1)-1)[:100]
-            # nan_idex = torch.nonzero(nan_mask)
-            # # print(nan_idex)
+            nan_mask = torch.isnan(gaussians.get_rotation.norm(dim=-1)-1)
+            nan_idex = torch.nonzero(nan_mask)
+            print("nan_idx: ", nan_idex)
+            print(gaussians.get_rotation[nan_idex])
+            print(gaussians._rotation[nan_idex])
             # # print(quats.shape)
             # print(nan_idex[0], nan_idex.shape)
             # print(nan_idex)
@@ -222,6 +261,16 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             # print("Here i have nan")
             assert False, "Here I have nan"
 
+
+        # Pick a random Camera
+        if not viewpoint_stack:
+            viewpoint_stack = scene.getTrainCameras().copy()
+        viewpoint_camera = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        
+        image_height=int(viewpoint_camera.image_height)
+        image_width=int(viewpoint_camera.image_width)
+        fy = fov2focal(viewpoint_camera.FoVy, image_height)
+        fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
         (
             xys,
@@ -246,7 +295,8 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             block_width = B_SIZE,
         )
 
-        ink_mix = rasterize_gaussians(
+
+        ink_mix, out_alpha = rasterize_gaussians(
                 xys,
                 depths,
                 radii,
@@ -258,20 +308,20 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 image_width,
                 B_SIZE,
                 background,
+                return_alpha=True
             )
         
         final_ink_mix = ink_mix.permute(2, 0, 1)
-        print("after: ", (final_ink_mix.sum(dim=0) > 1.0 + 1e-2).any())
+        # print("after: ", (final_ink_mix.sum(dim=0) > 1.0 + 1e-2).any())
 
         # print("final_ink_mix: ", final_ink_mix[:, int(final_ink_mix.shape[1]/2), int(final_ink_mix.shape[2]/2)])
 
         # out_img = ink_to_RGB(final_ink_mix)
         # torchvision.utils.save_image(torch.tensor(out_img), "ink_torch.png")
         torch.cuda.synchronize()
-        loss, out_img = loss_ink_mix(final_ink_mix, viewpoint_camera)
+        loss, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera)
 
-        if i == 2999:
-            torchvision.utils.save_image(out_img, "3000_optimize.png")
+        
         
 
         # if loss is nan
@@ -294,12 +344,53 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         optimizer.step()
         print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
 
+
+        # if i % 50 == 0:
+        # #     debug_plot_g(gaussians, "gaussian_init_data.png")
+        # #     debug_plot_g(gaussians, "gaussian_init_data_alpha.png", use_alpha=True)
+        #     plot_pos = gaussians.get_xyz.detach().cpu().numpy()
+        #     plot_alpha = gaussians.get_opacity.detach().cpu().numpy()
+        #     debug_color = np.zeros((plot_pos.shape[0], 3))
+        #     debug_color[:, 0] = 1.0
+        #     debug_alpha = np.ones(plot_pos.shape[0])
+
+        #     torchvision.utils.save_image(out_img, "3000_optimize.png")
+        #     debug_plot(plot_pos, 
+        #                debug_color, 
+        #                plot_alpha,
+        #                "gaussian_init_data_alpha.png"
+        #                )
+        #     debug_plot(plot_pos, 
+        #                debug_color, 
+        #                debug_alpha,
+        #                 "gaussian_init_data.png"
+        #                )
+
+
         if save_imgs and i % 5 == 0:
             frames.append((out_img.detach().cpu().numpy() * 255).astype(np.uint8))
 
+
+        if i == opt.iterations - 1:
+            torchvision.utils.save_image(out_img, "3000_optimize.png")
+            print("\n[ITER {}] Saving Gaussians".format(i))
+            # NOTE: to compare with reading from ply
+            print("{}'s ink mix: {}".format(0, gaussians.get_ink_mix[0]))
+            print("{}'s ink mix: {}".format(5000, gaussians.get_ink_mix[5000]))
+            debug_plot_g(gaussians, "gaussian_init_data.png")
+            debug_plot_g(gaussians, "gaussian_init_data_alpha.png", use_alpha=True)
+            scene.save(i+1)
+
+
+
     if save_imgs:
+            
+            print(frames[0].shape)
+            # img = Image.fromarray(frames[0])
             # save them as a gif with PIL
-            frames = [Image.fromarray(frame) for frame in frames]
+            # frames = [Image.fromarray(frame.transpose(1, 2, 0)).resize((100,100), Image.LANCZOS) for frame in frames]
+            frames = [Image.fromarray(frame.transpose(1, 2, 0)) for frame in frames]
+
             out_dir = os.path.join(os.getcwd(), "renders")
             os.makedirs(out_dir, exist_ok=True)
             frames[0].save(

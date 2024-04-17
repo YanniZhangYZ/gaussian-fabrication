@@ -61,7 +61,7 @@ def build_kd_tree_g_center(gaussian_blobs):
 
 
 
-def generate_voxel_grid(pcd_tree, gaussian_blobs,bbox, voxel_size=0.05):
+def generate_voxel_grid(pcd_tree : o3d.geometry.KDTreeFlann, gaussian_blobs,bbox, voxel_size=0.05):
     bbox_min = np.asarray(bbox.get_min_bound())
     bbox_max = np.asarray(bbox.get_max_bound())
     dimensions = np.ceil((bbox_max - bbox_min) / voxel_size).astype(int) + 1
@@ -71,8 +71,8 @@ def generate_voxel_grid(pcd_tree, gaussian_blobs,bbox, voxel_size=0.05):
 
     pos = np.zeros((dimensions[0], dimensions[1], dimensions[2], 3))
     colors = np.zeros((dimensions[0], dimensions[1], dimensions[2], 3))
-    opacities = np.zeros((dimensions[0], dimensions[1], dimensions[2], 1))
     probes = np.zeros((dimensions[0], dimensions[1], dimensions[2], 1))
+    opacities = np.zeros((dimensions[0], dimensions[1], dimensions[2], 1))
     color_blob_idx = np.zeros((dimensions[0], dimensions[1], dimensions[2], 1))
     maha_dists = np.zeros((dimensions[0], dimensions[1], dimensions[2], 1))
 
@@ -98,7 +98,6 @@ def generate_voxel_grid(pcd_tree, gaussian_blobs,bbox, voxel_size=0.05):
 
                 # most_likely_idx, prob = get_most_likely_blob_prob(np.array([x, y, z]) * voxel_size, neighbor_idxs, gaussian_blobs)
                 most_likely_idx, prob, m_distance = get_most_likely_blob_maha_distance(np.array([x, y, z]) * voxel_size + bbox_min, neighbor_idxs, gaussian_blobs)
-
 
                 # if most_likely_idx == -1:
                 color_blob_idx[x,y,z] = most_likely_idx
@@ -127,7 +126,7 @@ def generate_voxel_grid(pcd_tree, gaussian_blobs,bbox, voxel_size=0.05):
     return pos, colors, opacities, dimensions
     
 
-def compute_mahalanobis_distance(point,blob):
+def compute_mahalanobis_distance(point, blob):
     # Invert the covariance matrix for the Mahalanobis distance calculation
     inv_cov_matrix = np.linalg.inv(blob.cov3D)
     
@@ -137,7 +136,7 @@ def compute_mahalanobis_distance(point,blob):
     # Check if the distance is within 3 standard deviations
     return distance
 
-def get_most_likely_blob_maha_distance(query_point, neighbor_idxs, gaussian_blobs, distance_threshold=3):
+def get_most_likely_blob_maha_distance(query_point, neighbor_idxs, gaussian_blobs, distance_threshold=5):
     min_distance = float('inf')
     min_index = -1
     for list_id, n_idx in enumerate(neighbor_idxs):
@@ -250,7 +249,7 @@ def write_to_vol_file(filename, values, channels, bbox, dimensions, voxel_size=0
 
 
 if __name__ == '__main__':
-    ply_path = "ply_convert/point_cloud.ply"
+    ply_path = "3dgs_lego_train/point_cloud/iteration_3000/point_cloud.ply"
     # ply_path = "ply_convert/handcrafted/hand_scene.ply"
 
     do_intermediate_plot = False
@@ -261,7 +260,14 @@ if __name__ == '__main__':
         gaussian_blobs.append(Gaussian(pos, scale, rot, opacity, sh))
     print('Done loading gaussians')
     
-    pcd_tree,aabb = build_kd_tree_g_center(gaussian_blobs)
+    # pcd_tree, aabb = build_kd_tree_g_center(gaussian_blobs)
+    centers = np.array([blob.pos for blob in gaussian_blobs])
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(centers) # The idx is the same as the gaussian_blobs
+    pcd_tree = o3d.geometry.KDTreeFlann(pcd)
+    aabb = pcd.get_axis_aligned_bounding_box()
+
+    print("There are {d} gaussian blobs in the point cloud".format(d=len(centers)))
 
     if do_intermediate_plot:
         # plot example gaussian blob and bbx
@@ -272,8 +278,8 @@ if __name__ == '__main__':
         plot_gaussian_ellipsoid_bbx(mean, cov, vertices,color)
         plot_gaussian_scene_bbox(gaussian_blobs, np.asarray(aabb.get_box_points()))
 
-    voxel_size = 0.05
-    pos, colors, opacities, dimensions = generate_voxel_grid(pcd_tree, gaussian_blobs,aabb, voxel_size=voxel_size)
+    voxel_size = 0.02
+    pos, colors, opacities, dimensions = generate_voxel_grid(pcd_tree, gaussian_blobs, aabb, voxel_size=voxel_size)
 
     plot_voxel_data(pos, colors, opacities)
 
