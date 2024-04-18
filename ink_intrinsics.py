@@ -74,6 +74,26 @@ class Ink(nn.Module):
         self.z_observer = np.array([cmfs[w][2] for w in self.wavelength])
 
 
+        # RGB absorption and scattering data from  the scoped paper and https://research-explorer.ista.ac.at/download/486/7189/ElekSumin2017SGA_reduced_file_size.pdf
+        albedo_RGB = np.array([
+                    [0.05, 0.7, 0.98],  # Cyan
+                    [0.98, 0.1, 0.9],  # Magenta
+                    [0.997, 0.995, 0.15],  # Yellow
+                    [0.35, 0.35, 0.35],  # KEY: Black
+                    [0.9991, 0.9997, 0.999],   # White
+                    [1.0, 1.0, 1.0] #Transparent
+                    ])
+        sigma_RGB = np.array([
+                    [9.0, 4.5, 7.5],  # Cyan
+                    [2.5, 3.0, 10.0],  # Magenta
+                    [2.25, 3.75, 19.0],  # Yellow
+                    [5.0, 5.5, 6.5],  # KEY: Black
+                    [6.0, 9.0, 24.0],   # White
+                    [1e-4, 1e-4, 1e-4]] #Transparent
+                    )
+        
+        self.scattering_RGB = albedo_RGB * sigma_RGB
+        self.absorption_RGB = sigma_RGB - self.scattering_RGB
         
         if use_torch:
             with torch.no_grad():

@@ -21,6 +21,7 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 import torch.nn.functional as F
+from ink_intrinsics import Ink
 
 class GaussianModel:
 
@@ -31,6 +32,11 @@ class GaussianModel:
             symm = strip_symmetric(actual_covariance)
             return symm
 
+        def build_actual_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
+            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
+            actual_covariance = L @ L.transpose(1, 2)
+            return actual_covariance
+
         def ink_norm(x):
             return F.softmax(x, dim=-1).clamp(0.0, 1.0)
         
@@ -38,6 +44,7 @@ class GaussianModel:
         self.scaling_inverse_activation = torch.log
 
         self.covariance_activation = build_covariance_from_scaling_rotation
+        self.actual_covariance_activation = build_actual_covariance_from_scaling_rotation
 
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
@@ -106,6 +113,7 @@ class GaussianModel:
     
     @property
     def get_rotation(self):
+        assert (self._rotation.norm(dim=-1) > 0).all(), "Rotation is not normalizable"
         return self.rotation_activation(self._rotation)
     
     @property
@@ -128,10 +136,70 @@ class GaussianModel:
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+    
+    def get_actual_covariance(self, scaling_modifier = 1):
+        return self.actual_covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
+
+    #TODO: havn't tested this function
+    def convert_center_ink_2_rgb_4_debug(self):
+        # c0 = gaussians._features_dc.detach().cpu().numpy()
+        # SH_C0 = 0.28209479177387814
+        # color = SH_C0 * c0
+        # color += 0.5
+        # color =  np.clip(color, 0.0, 1.0).reshape(-1, 3)
+        # assert color.shape == (gaussians.get_xyz.shape[0], 3), color.shape
+        # return color
+        INK = Ink()
+        mix = self.get_ink_mix * self.get_opacity
+        N, C = mix.shape
+        # K
+        mix_K = mix @ INK.absorption_matrix
+        # S
+        mix_S = mix @ INK.scattering_matrix + 1e-8
+
+        #equation 2
+        R_mix = 1 + mix_K / mix_S - torch.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)
+
+        if torch.isnan(torch.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)).any():
+                temp = (mix_K / mix_S)**2 + 2 * mix_K / mix_S
+                mask = torch.nonzero(torch.isnan(torch.sqrt( temp)))
+                # print(R_mix.shape)
+                print(mask)
+                print(temp[mask[0]])
+                assert False, "sqrt negative value has nan"
+
+        # Saunderson’s correction reflectance coefficient, commonly used values
+        k1 = 0.04
+        k2 = 0.6
+        # equation 6
+        R_mix = (1 - k1) * (1 - k2) * R_mix / (1 - k2 * R_mix)
+
+        with torch.no_grad():
+            # equation 3 - 5
+            x_D56 = INK.x_observer * INK.sampled_illuminant_D65
+            # x_D56 /= np.sum(x_D56)
+            y_D56 = INK.y_observer * INK.sampled_illuminant_D65
+            # y_D56 /= np.sum(y_D56)
+            z_D56 = INK.z_observer * INK.sampled_illuminant_D65
+            # z_D56 /= np.sum(z_D56)
+        X = R_mix @ x_D56
+        Y = R_mix @ y_D56
+        Z = R_mix @ z_D56
+
+        XYZ = torch.stack([X,Y,Z],axis=1).T
+        Y_D56 = torch.sum(y_D56)
+
+        # Convert XYZ to sRGB, Equation 7
+        with torch.no_grad():
+            sRGB_matrix = torch.tensor([[3.2406, -1.5372, -0.4986],
+                                    [-0.9689, 1.8758, 0.0415],
+                                    [0.0557, -0.2040, 1.0570]], device="cuda")
+        sRGB = ((sRGB_matrix @ XYZ) / Y_D56).T
+        return sRGB.detach().cpu().numpy()
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
@@ -194,12 +262,12 @@ class GaussianModel:
                 return lr
 
     def construct_list_of_attributes(self):
-        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'ink_c', 'ink_m', 'ink_y', 'ink_k', 'ink_w', 'ink_t']
         # All channels except the 3 DC
-        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
-            l.append('f_dc_{}'.format(i))
-        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
-            l.append('f_rest_{}'.format(i))
+        # for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+        #     l.append('f_dc_{}'.format(i))
+        # for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+        #     l.append('f_rest_{}'.format(i))
         l.append('opacity')
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
@@ -212,8 +280,9 @@ class GaussianModel:
 
         xyz = self._xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
-        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        ink_mix = self._ink_mix.detach().cpu().numpy() # NOTE : CMYKWT
+        # f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        # f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
@@ -221,7 +290,7 @@ class GaussianModel:
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, ink_mix, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -237,25 +306,29 @@ class GaussianModel:
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
+        ink_mix = np.stack((np.asarray(plydata.elements[0]["ink_c"]),
+                            np.asarray(plydata.elements[0]["ink_m"]),
+                            np.asarray(plydata.elements[0]["ink_y"]),
+                            np.asarray(plydata.elements[0]["ink_k"]),
+                            np.asarray(plydata.elements[0]["ink_w"]),
+                            np.asarray(plydata.elements[0]["ink_t"])),  axis=1)
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
 
-        ink_mix = np.zeros((2, 6))
-        ink_mix[0,:] = np.asarray([0.0000, 0.5107, 0.4893, 0.0000, 0.0000, 0.0000]) # NOTE: red blob ink concentration
-        ink_mix[1,:] = np.asarray([0.2231, 0.0000, 0.7769, 0.0000, 0.0000, 0.0000]) # NOTE: red blob ink concentration
+       
 
-        features_dc = np.zeros((xyz.shape[0], 3, 1))
-        features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
-        features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
-        features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+        # features_dc = np.zeros((xyz.shape[0], 3, 1))
+        # features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+        # features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+        # features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
 
-        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
-        extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
-        assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
-        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
-        for idx, attr_name in enumerate(extra_f_names):
-            features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+        # extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+        # extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
+        # assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
+        # features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+        # for idx, attr_name in enumerate(extra_f_names):
+        #     features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        # # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+        # features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
@@ -270,13 +343,14 @@ class GaussianModel:
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        # self._ink_mix = nn.Parameter(torch.tensor(ink_mix, dtype=torch.float, device="cuda").requires_grad_(True)) # NOTE: CMYK
+        # self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        # self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
-        self._ink_mix = nn.Parameter(torch.tensor(ink_mix, dtype=torch.float, device="cuda").requires_grad_(True)) # NOTE
+        self._ink_mix = nn.Parameter(torch.tensor(ink_mix, dtype=torch.float, device="cuda").requires_grad_(True))
 
         self.active_sh_degree = self.max_sh_degree
 

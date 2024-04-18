@@ -135,7 +135,7 @@ from kornia.color import rgb_to_lab
 import math
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
-def loss_ink_mix(mix, out_alpha, viewpoint_cam):
+def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     
     C, H, W = mix.shape
     # mix = F.relu(mix)
@@ -147,14 +147,6 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam):
         raise RuntimeError("TODO: normalize the ink")
 
 
-    # epsilon = 1e-8
-    # mix = mix / (mix.sum(dim=0, keepdim=True) + epsilon)
-
-    back_ground_mask = mix.sum(dim=0) < 1e-6
-    blob_mask = torch.logical_not(back_ground_mask)
-    transparent_mask = 1.0 - mix.sum(axis=0)
-    transparent_blob_mask = blob_mask.float() - mix.sum(axis=0)
-
     # NOTE: The training image has transparent background!
     # NOTE: Therefore we add white ink only to the place where there is a blob!
     # mix[4,:,:] = mix[4,:,:] + transparent_mask  # This is used in the original ink_to_rgb.py file
@@ -165,9 +157,47 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam):
 
     current_render = ink_to_RGB(mix, H, W)
 
-    # loss_mse = F.mse_loss(current_render, gt_rgb)
 
-    gt_image = viewpoint_cam.original_image.cuda()
+    # NOTE: we need to take special care to the backgroud color
+    # For the rasterized result, if there is no ink mixture, e.g., np.zeros(6), the resulting RGB is near white (1,1,1)
+    # However, the GT image has a transparent background, and depends on whether we use '-w' or not, the background is filled with white or black
+    # For the loss computation, we care two things:
+    # 1. For the palces where GT has RGB color, we want the render to be close to that color
+    # 2. For the places where GT has no color (alpha is 0), we want the render's out alpha to be close to 0, and other places to be close to 1
+
+    # NOTE: Therefore
+    # 1. We compute the loss between the render * GT alpha and GT, so that image only where GT has RGB color
+    # 2. We compute the loss between the render alpha and GT alpha, so that the render's alpha is close to GT alpha, especially when GT has no color
+
+
+    # TODO: Sometimes the viewpoint_cam.image_name is larger than 99. Need to fix this
+    gt_image = viewpoint_cam.original_image.cuda() # This is the GT with post processed bkg depends on -w flag
+    gt_original_path = os.path.join(gt_images_folder_path, viewpoint_cam.image_name+".png")
+    gt_orginal = Image.open(gt_original_path)
+    im_data = np.array(gt_orginal.convert("RGBA"))/ 255.0
+    gt_original_rgba = torch.tensor(im_data, dtype=torch.float32, device="cuda").view(H, W, 4).permute(2, 0, 1)
+    # gt_original = torch.tensor(im_data[:, :, :3], dtype=torch.float32, device="cuda")
+    # gt_alpha = torch.tensor(im_data[:, :, 3:4], dtype=torch.float32, device="cuda")
+    out_alpha = out_alpha.view(H, W, 1).permute(2, 0, 1)
+    # gt_alpha = gt_alpha.view(H, W, 1).permute(2, 0, 1)
+    # assert out_alpha.shape == gt_alpha.shape, (out_alpha.shape, gt_alpha.shape)
+
+
+    # render * GT alpha
+    render_filtered = current_render * gt_original_rgba[3:4, :, :]
+    assert render_filtered.shape == current_render.shape, (render_filtered.shape, current_render.shape)
+    print(render_filtered[:,0,0], current_render[:,0,0])
+    render_filtered_rgba = torch.cat([render_filtered, out_alpha], dim=0)
+    # gt_rgba = torch.cat([gt_image, gt_alpha], dim=0)
+    # Ll1 = l1_loss(render_rgba, gt_rgba)
+    assert render_filtered_rgba.shape == gt_original_rgba.shape, (render_filtered_rgba.shape, gt_original_rgba.shape)
+    Ll1 = l1_loss(render_filtered_rgba, gt_original_rgba)
+
+
+
+
+
+    
     # original_GT= Image.open('lego/train/r_25.png')
     # origin_GT_RGBA = np.array(original_GT.convert("RGBA"))/ 255.0
     # alpha = torch.tensor(origin_GT_RGBA[:, :, 3:4], dtype=torch.float32, device="cuda")
@@ -180,7 +210,7 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam):
     # render_rgba = torch.cat([current_render, out_alpha], dim=0)
     # gt_rgba = torch.cat([gt_image, alpha], dim=0)
     # Ll1 = l1_loss(render_rgba, gt_rgba)
-    Ll1 = l1_loss(current_render, gt_image)
+    # Ll1 = l1_loss(current_render, gt_image)
 
     loss = (1.0 - 0.2) * Ll1 + 0.2 * (1.0 - ssim(current_render, gt_image))
 
@@ -225,9 +255,10 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
     # print("GT 000 :", viewpoint_camera.original_image.cuda()[:, 0, 0])
+    gaussians._xyz.requires_grad = False
 
     l = [
-        {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
+        # {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
         {'params': [gaussians._ink_mix], 'lr': lr, "name": "ink"},
         {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
         {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
@@ -242,6 +273,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # gt_img = image_path_to_tensor('lego/train/r_25.png')
     
     viewpoint_stack = None
+    gt_images_folder_path = os.path.join(dataset.source_path, "train")
     # torch.autograd.set_detect_anomaly(True)
 
     for i in range(opt.iterations):
@@ -265,7 +297,10 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
+        print("viewpoint_stack: ", len(viewpoint_stack))
         viewpoint_camera = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+
+        return 0
         
         image_height=int(viewpoint_camera.image_height)
         image_width=int(viewpoint_camera.image_width)
@@ -296,6 +331,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         )
 
 
+        # NOTE: in the most ideal case, for the place that GT has no color, the rasterize result alpha should be 0
         ink_mix, out_alpha = rasterize_gaussians(
                 xys,
                 depths,
@@ -318,9 +354,9 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
         # out_img = ink_to_RGB(final_ink_mix)
         # torchvision.utils.save_image(torch.tensor(out_img), "ink_torch.png")
+        
         torch.cuda.synchronize()
-        loss, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera)
-
+        loss, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera, gt_images_folder_path)
         
         
 
@@ -372,13 +408,13 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
         if i == opt.iterations - 1:
-            torchvision.utils.save_image(out_img, "3000_optimize.png")
+            torchvision.utils.save_image(out_img, os.path.join(dataset.model_path, "result_imgs", "3000_optimize.png"))
             print("\n[ITER {}] Saving Gaussians".format(i))
             # NOTE: to compare with reading from ply
             print("{}'s ink mix: {}".format(0, gaussians.get_ink_mix[0]))
             print("{}'s ink mix: {}".format(5000, gaussians.get_ink_mix[5000]))
-            debug_plot_g(gaussians, "gaussian_init_data.png")
-            debug_plot_g(gaussians, "gaussian_init_data_alpha.png", use_alpha=True)
+            debug_plot_g(gaussians, os.path.join(dataset.model_path, "result_imgs","gaussian_init_data.png"))
+            debug_plot_g(gaussians, os.path.join(dataset.model_path, "result_imgs","gaussian_init_data_alpha.png"), use_alpha=True)
             scene.save(i+1)
 
 
@@ -394,13 +430,21 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             out_dir = os.path.join(os.getcwd(), "renders")
             os.makedirs(out_dir, exist_ok=True)
             frames[0].save(
-                f"training.gif",
+                os.path.join(dataset.model_path, "result_imgs","training.gif"),
                 save_all=True,
                 append_images=frames[1:],
                 optimize=False,
                 duration=5,
                 loop=0,
             )
+            # frames[0].save(
+            #     f"training.gif",
+            #     save_all=True,
+            #     append_images=frames[1:],
+            #     optimize=False,
+            #     duration=5,
+            #     loop=0,
+            # )
 
 
 
