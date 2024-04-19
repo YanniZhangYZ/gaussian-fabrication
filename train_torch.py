@@ -22,7 +22,7 @@ import torchvision
 from utils.loss_utils import l1_loss, ssim
 from train import prepare_output_and_logger
 
-from mitsuba_conversion import debug_plot_g
+# from mitsuba_conversion import debug_plot_g
 
 
 try:
@@ -120,16 +120,6 @@ def ink_to_RGB(mix, H, W):
 
 
 
-def image_path_to_tensor(image_path):
-    import torchvision.transforms as transforms
-
-    img = Image.open(image_path)
-    img = img.resize((100, 100))
-    transform = transforms.ToTensor()
-    img_tensor = transform(img).permute(1, 2, 0)[..., :3] # Original gsplat: Here it is in shape H, W, 3
-    img_tensor = img_tensor.permute(2, 0, 1) # For our optimization implementation, we need 3, H, W
-    return img_tensor.to("cuda")
-
 
 from kornia.color import rgb_to_lab
 import math
@@ -174,24 +164,32 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     gt_image = viewpoint_cam.original_image.cuda() # This is the GT with post processed bkg depends on -w flag
     gt_original_path = os.path.join(gt_images_folder_path, viewpoint_cam.image_name+".png")
     gt_orginal = Image.open(gt_original_path)
+    if gt_orginal.size != (H, W): # in case we are not training on the original size
+        gt_orginal = gt_orginal.resize((H, W))
     im_data = np.array(gt_orginal.convert("RGBA"))/ 255.0
+
     gt_original_rgba = torch.tensor(im_data, dtype=torch.float32, device="cuda").view(H, W, 4).permute(2, 0, 1)
-    # gt_original = torch.tensor(im_data[:, :, :3], dtype=torch.float32, device="cuda")
-    # gt_alpha = torch.tensor(im_data[:, :, 3:4], dtype=torch.float32, device="cuda")
     out_alpha = out_alpha.view(H, W, 1).permute(2, 0, 1)
-    # gt_alpha = gt_alpha.view(H, W, 1).permute(2, 0, 1)
-    # assert out_alpha.shape == gt_alpha.shape, (out_alpha.shape, gt_alpha.shape)
 
 
     # render * GT alpha
     render_filtered = current_render * gt_original_rgba[3:4, :, :]
     assert render_filtered.shape == current_render.shape, (render_filtered.shape, current_render.shape)
-    print(render_filtered[:,0,0], current_render[:,0,0])
     render_filtered_rgba = torch.cat([render_filtered, out_alpha], dim=0)
     # gt_rgba = torch.cat([gt_image, gt_alpha], dim=0)
-    # Ll1 = l1_loss(render_rgba, gt_rgba)
+
+    # 1. l1 between render and GT, RGB loss
+    # Ll1 = l1_loss(current_render, gt_image)
+
+    # 2. l1 between render * GT alpha and GT, RGBA loss
     assert render_filtered_rgba.shape == gt_original_rgba.shape, (render_filtered_rgba.shape, gt_original_rgba.shape)
     Ll1 = l1_loss(render_filtered_rgba, gt_original_rgba)
+
+    # 3. l1 between render and GT, RGBA loss
+    # current_render_rgba = torch.cat([current_render, out_alpha], dim=0)
+    # gt_image_rgba = torch.cat([gt_image, gt_original_rgba[3:4,:,:]], dim=0)
+    # assert current_render_rgba.shape == gt_image_rgba.shape, (current_render_rgba.shape, gt_image_rgba.shape)
+    # Ll1 = l1_loss(current_render_rgba, gt_image_rgba)
 
 
 
@@ -254,11 +252,10 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fy = fov2focal(viewpoint_camera.FoVy, image_height)
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
-    # print("GT 000 :", viewpoint_camera.original_image.cuda()[:, 0, 0])
-    gaussians._xyz.requires_grad = False
+    # gaussians._xyz.requires_grad = False
 
     l = [
-        # {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
+        {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
         {'params': [gaussians._ink_mix], 'lr': lr, "name": "ink"},
         {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
         {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
@@ -270,7 +267,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     B_SIZE = 16
 
     #  TODO
-    # gt_img = image_path_to_tensor('lego/train/r_25.png')
     
     viewpoint_stack = None
     gt_images_folder_path = os.path.join(dataset.source_path, "train")
@@ -297,10 +293,8 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        print("viewpoint_stack: ", len(viewpoint_stack))
         viewpoint_camera = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-        return 0
         
         image_height=int(viewpoint_camera.image_height)
         image_width=int(viewpoint_camera.image_width)
@@ -358,7 +352,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         torch.cuda.synchronize()
         loss, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera, gt_images_folder_path)
         
-        
 
         # if loss is nan
         #TODO
@@ -379,6 +372,8 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         torch.cuda.synchronize()
         optimizer.step()
         print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
+
+        # return 0
 
 
         # if i % 50 == 0:
@@ -408,13 +403,21 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
         if i == opt.iterations - 1:
-            torchvision.utils.save_image(out_img, os.path.join(dataset.model_path, "result_imgs", "3000_optimize.png"))
+            imgs_path = os.path.join(dataset.model_path, "result_imgs")
+            if not os.path.exists(imgs_path):
+                os.makedirs(imgs_path)
+            torchvision.utils.save_image(out_img, os.path.join(imgs_path, "3000_optimize.png"))
             print("\n[ITER {}] Saving Gaussians".format(i))
             # NOTE: to compare with reading from ply
             print("{}'s ink mix: {}".format(0, gaussians.get_ink_mix[0]))
             print("{}'s ink mix: {}".format(5000, gaussians.get_ink_mix[5000]))
-            debug_plot_g(gaussians, os.path.join(dataset.model_path, "result_imgs","gaussian_init_data.png"))
-            debug_plot_g(gaussians, os.path.join(dataset.model_path, "result_imgs","gaussian_init_data_alpha.png"), use_alpha=True)
+            pos = gaussians.get_xyz.detach().cpu().numpy()
+            debug_color = gaussians.convert_center_ink_2_rgb_4_debug()
+            assert debug_color.shape == pos.shape, (debug_color.shape, pos.shape)
+            debug_alpha = gaussians.get_opacity.detach().cpu().numpy()
+            alpha_ones = np.ones(pos.shape[0])
+            debug_plot(pos, debug_color, debug_alpha, os.path.join(imgs_path,"gaussian_init_data_alpha.png"))
+            debug_plot(pos, debug_color, alpha_ones, os.path.join(imgs_path,"gaussian_init_data.png"))
             scene.save(i+1)
 
 
@@ -449,8 +452,9 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
 if __name__ == "__main__":
+    # NOTE: Here we add eval just to using the 100 training cameras. It is easier to find the original gt image this way
     '''
-    python train_torch.py -m 3dgs_lego_train -s lego --iterations 3000 --sh_degree 0 -r 8
+    python train_torch.py -m 3dgs_lego_train -s lego --iterations 3000 --sh_degree 0  --eval -r 8
     '''
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")

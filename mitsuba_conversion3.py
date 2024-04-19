@@ -91,7 +91,7 @@ class Helper:
 HELPER = Helper()
 
 
-def voxel_splatting(gaussians:GaussianModel,dimensions: tuple):
+def one_voxel_one_gaussian(gaussians:GaussianModel,dimensions: tuple):
     '''
         The steps are as follows:
         1. Build a bounding box around the gaussian blobs
@@ -101,7 +101,6 @@ def voxel_splatting(gaussians:GaussianModel,dimensions: tuple):
         5. add corresponding ink mixture * gaussian opacity to the voxel centers
 
     '''
-
     assert len(dimensions) == 3, "Dimensions must be a 3-tuple"
 
 
@@ -130,15 +129,10 @@ def voxel_splatting(gaussians:GaussianModel,dimensions: tuple):
     print(aabb.get_extent())
     
 
-    # ====================== voxel splatting =======================
-
-    # create a kdtree for the voxel centers
-    vc_pcd = o3d.geometry.PointCloud()
-    vc_pcd.points = o3d.utility.Vector3dVector(vc_pos)
-    vc_pcd_tree = o3d.geometry.KDTreeFlann(vc_pcd)
+    # ====================== one voxel one gaussian =======================
 
     ink_mix_voxel = np.zeros((vc_pos.shape[0], 6)) # the index of ink_mix_voxel is the same as vc_pos
-    g_voxel_counter = np.zeros(vc_pos.shape[0]) # all False
+    voxel_opacity = np.zeros(vc_pos.shape[0]) # all False
 
     g_pos = gaussians.get_xyz.detach().cpu().numpy()
     g_cov = gaussians.get_actual_covariance().detach().cpu().numpy()
@@ -151,32 +145,47 @@ def voxel_splatting(gaussians:GaussianModel,dimensions: tuple):
 
     assert (g_ink_mix >= 0.0).all(), "gaussian ink mixture should be positive, there might be bug in optimization"
 
-    with tqdm(total=g_pos.shape[0]) as pbar:
-        for g_idx, p in enumerate(g_pos):
-            [k, vc_neighbor_idx, squared_distances] = vc_pcd_tree.search_knn_vector_3d(p, 20)
-            vc_neighbor_pos = vc_pos[vc_neighbor_idx]
+    g_pcd_tree = o3d.geometry.KDTreeFlann(g_pcd)
+
+    print("total number of iterations: ", vc_pos.shape[0])
+
+    with tqdm(total=vc_pos.shape[0]) as pbar:
+
+        for vc_idx, vc in enumerate(vc_pos):
+            [k, g_neighbor_idx, squared_distances] = g_pcd_tree.search_knn_vector_3d(vc, 20)
+
+            g_neighbor_pos = g_pos[g_neighbor_idx]
             # get the 3 sigma index of the query_idx
-            vc_result_idx, maha_dists = get_3_sgima_idx(p, g_cov[g_idx], vc_neighbor_idx, vc_neighbor_pos)
-            if vc_result_idx is None:
-                RuntimeError("Should decrease voxel size. No voxel center is within 3 sigma of the gaussian blob")
+            g_result_idx, maha_dists = get_3_sgima_idx(vc, g_cov[g_neighbor_idx], g_neighbor_idx, g_neighbor_pos)
+            if g_result_idx is None:
+                # No gaussian is close, assign 100% transparent ink
+                ink_mix_voxel[vc_idx] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+
+                # RuntimeError("Should decrease voxel size. No voxel center is within 3 sigma of the gaussian blob")
             else:
-                g_voxel_counter[vc_result_idx] += 1
+                # g_voxel_counter[vc_result_idx] += 1
                 probs = np.exp(-0.5 * maha_dists)
-                assert probs.shape == vc_result_idx.shape, "probs and vc_result_idx should have the same shape {} != {}".format(probs.shape, vc_result_idx.shape)
-                assert (probs >= 0.0).all() and np.isnan(probs).any() == False, "probs should be positive and not nan"
-                ink_mix_voxel[vc_result_idx] +=  (g_opacities[g_idx] * probs)[:, np.newaxis] * g_ink_mix[g_idx]
+                max_prob = np.max(probs)
+                max_prob_idx = np.argmax(probs)
+                max_prob_g_idx = g_result_idx[max_prob_idx]
+                ink_mix_voxel[vc_idx] =  (g_opacities[max_prob_g_idx] * max_prob) * g_ink_mix[max_prob_g_idx]
+                voxel_opacity[vc_idx] = g_opacities[max_prob_g_idx]
+
+                # assert probs.shape == vc_result_idx.shape, "probs and vc_result_idx should have the same shape {} != {}".format(probs.shape, vc_result_idx.shape)
+                # assert (probs >= 0.0).all() and np.isnan(probs).any() == False, "probs should be positive and not nan"
+                # ink_mix_voxel[vc_result_idx] +=  (g_opacities[g_idx] * probs)[:, np.newaxis] * g_ink_mix[g_idx]
             pbar.update(1)
         
     # print(g_voxel_counter.max())
     # return
-    transparent_voxels = np.where(g_voxel_counter == 0)[0]
-    ink_mix_voxel[transparent_voxels] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]) # 100% transparent ink
-    g_voxel_counter[transparent_voxels] = 1
+    # transparent_voxels = np.where(g_voxel_counter == 0)[0]
+    # ink_mix_voxel[transparent_voxels] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]) # 100% transparent ink
+    # g_voxel_counter[transparent_voxels] = 1
 
     # ====================== Debug visualize =======================
-    debug_color = HELPER.g_center_RGB(ink_mix_voxel / g_voxel_counter[:, np.newaxis]) # TODO: not sure if this is reasonable
+    debug_color = HELPER.g_center_RGB(ink_mix_voxel) # TODO: not sure if this is reasonable
     debug_alpha = np.ones(debug_color.shape[0])
-    HELPER.debug_plot(vc_pos, debug_color, debug_alpha, "voxel_splatting.png")
+    HELPER.debug_plot(vc_pos, debug_color, voxel_opacity, "voxel_splatting.png")
 
 
 
@@ -191,7 +200,14 @@ def get_3_sgima_idx(reference_pos, g_cov, neighbor_idxs, queries_pos):
     # get the 3 sigma index of the query_idx
     inv_cov = np.linalg.inv(g_cov)
     diff = queries_pos - reference_pos
-    maha_distance = np.sqrt(np.sum(np.dot(diff, inv_cov) * diff, axis=1))
+    # print(diff.shape)
+    # print(inv_cov.shape)
+    # print(np.isnan(inv_cov).any(), "Inverse covariance should not have nan")
+    # print(np.dot(diff, inv_cov).shape)
+    # print((np.array([diff[i, :].T @ inv_cov[i, :, :] @ diff[i, :] for i in range(diff.shape[0])]).shape))
+    # assert False, "stop here"
+
+    maha_distance = np.sqrt(np.array([diff[i, :].T @ inv_cov[i, :, :] @ diff[i, :] for i in range(diff.shape[0])]))
     assert np.isnan(maha_distance).any() == False, "Mahalanobis distance should not have nan"
     in_3_sigma = np.where(maha_distance <= 3)[0]
     if len(in_3_sigma) == 0:
@@ -208,7 +224,7 @@ def mitsuba_gaussians(dataset : ModelParams, iteration : int, pipeline : Pipelin
         gaussians = GaussianModel(0)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
 
-        voxel_splatting(gaussians, [300,300,300])
+        one_voxel_one_gaussian(gaussians, [600,600,600])
 
 
 if __name__ == "__main__":
