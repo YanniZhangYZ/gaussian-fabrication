@@ -182,14 +182,14 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     # Ll1 = l1_loss(current_render, gt_image)
 
     # 2. l1 between render * GT alpha and GT, RGBA loss
-    assert render_filtered_rgba.shape == gt_original_rgba.shape, (render_filtered_rgba.shape, gt_original_rgba.shape)
-    Ll1 = l1_loss(render_filtered_rgba, gt_original_rgba)
+    # assert render_filtered_rgba.shape == gt_original_rgba.shape, (render_filtered_rgba.shape, gt_original_rgba.shape)
+    # Ll1 = l1_loss(render_filtered_rgba, gt_original_rgba)
 
     # 3. l1 between render and GT, RGBA loss
-    # current_render_rgba = torch.cat([current_render, out_alpha], dim=0)
-    # gt_image_rgba = torch.cat([gt_image, gt_original_rgba[3:4,:,:]], dim=0)
-    # assert current_render_rgba.shape == gt_image_rgba.shape, (current_render_rgba.shape, gt_image_rgba.shape)
-    # Ll1 = l1_loss(current_render_rgba, gt_image_rgba)
+    current_render_rgba = torch.cat([current_render, out_alpha], dim=0)
+    gt_image_rgba = torch.cat([gt_image, gt_original_rgba[3:4,:,:]], dim=0)
+    assert current_render_rgba.shape == gt_image_rgba.shape, (current_render_rgba.shape, gt_image_rgba.shape)
+    Ll1 = l1_loss(current_render_rgba, gt_image_rgba)
 
 
 
@@ -252,10 +252,10 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fy = fov2focal(viewpoint_camera.FoVy, image_height)
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
-    # gaussians._xyz.requires_grad = False
+    gaussians._xyz.requires_grad = False
 
     l = [
-        {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
+        # {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
         {'params': [gaussians._ink_mix], 'lr': lr, "name": "ink"},
         {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
         {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},

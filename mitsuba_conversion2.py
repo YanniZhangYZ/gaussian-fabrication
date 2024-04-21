@@ -176,6 +176,8 @@ def voxel_splatting(gaussians:GaussianModel,dimensions: tuple):
     # ====================== Debug visualize =======================
     debug_color = HELPER.g_center_RGB(ink_mix_voxel / g_voxel_counter[:, np.newaxis]) # TODO: not sure if this is reasonable
     debug_alpha = np.ones(debug_color.shape[0])
+    # NOTE: the debug plot, esipecially the bkg color, is not accurate. 
+    # As for zero mixture, or 100% transparent ink, the color conversion using KM is always white.
     HELPER.debug_plot(vc_pos, debug_color, debug_alpha, "voxel_splatting.png")
 
 
