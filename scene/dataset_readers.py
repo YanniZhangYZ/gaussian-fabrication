@@ -110,7 +110,8 @@ def fetchPly(path):
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
     colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
-    return BasicPointCloud(points=positions, colors=colors, normals=normals)
+    pcd = BasicPointCloud(positions, colors, normals)
+    return pcd
 
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array
@@ -245,17 +246,32 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         num_pts = xyz.shape[0]
         print("!!!!!!!! The actaul number of points is: ", xyz.shape)
+
+        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+        scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        for idx, attr_name in enumerate(scale_names):
+            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+        rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+        rots = np.zeros((xyz.shape[0], len(rot_names)))
+        for idx, attr_name in enumerate(rot_names):
+            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
         
         # We create random points inside the bounds of the synthetic Blender scenes
         # xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
         shs = np.random.random((num_pts, 3)) / 255.0
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+        pcd = BasicPointCloud(xyz, SH2RGB(shs), np.zeros((num_pts, 3)))
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
     try:
         print(f"Get point cloud from {ply_path} ...")
         pcd = fetchPly(ply_path)
+        pcd.rots = rots
+        pcd.scales = scales
     except:
+        print(f"Failed to get point cloud from {ply_path} ... pcd = None")
         pcd = None
 
     scene_info = SceneInfo(point_cloud=pcd,

@@ -34,12 +34,13 @@ class Helper:
         ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=rgba, s=1.0)
         plt.savefig(path)
 
-    def mix_2_RGB_wavelength(self, mix):
+    def mix_2_RGB_wavelength(self, mix, keep_dim = False):
         INK = Ink(use_torch = False)
         assert mix.shape[-1] == 6, "Ink mixture should have 6 channels"
         assert (mix >= 0.0).all(), "Ink mixture should be positive"
         assert (mix <= 1.0 + 1e-1).all(), "Ink mixture should be less than 1.0. {} > 1.0".format(mix.max())
 
+        H,W,D,C = mix.shape
         mix = mix.reshape(-1,6)
         N, C = mix.shape
         # K
@@ -76,7 +77,6 @@ class Helper:
         Z = R_mix @ z_D56
 
         XYZ = np.stack([X,Y,Z],axis=1).T
-        print(XYZ.shape)
         Y_D56 = np.sum(y_D56)
 
         # Convert XYZ to sRGB, Equation 7
@@ -85,6 +85,8 @@ class Helper:
                                 [0.0557, -0.2040, 1.0570]])
         sRGB = ((sRGB_matrix @ XYZ) / Y_D56).T
         assert sRGB.shape == (N, 3), "sRGB shape should be (N,3)"
+        if keep_dim:
+            return sRGB.reshape(H,W,D,3)
         return sRGB
         # sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
 
@@ -110,6 +112,15 @@ class Helper:
         assert (np.abs(mix.sum(axis=3) - 1.0) < 1e-6).all(), "Ink mixture should sum to 1.0"
         # print(INK.absorption_RGB.shape, INK.scattering_RGB.shape) # (6, 3)
         return mix
+    
+
+    # def mix_2_RGB_RGB(self, mix):
+    #     absoprtion, scattering = self.RGB_ink_param_2_RGB(mix)
+
+    #     I0 = np.array([1.0, 1.0, 1.0]) # assuming initial light is white
+    #     d = 5.0 # Distance light travels through the medium
+
+
 
     def RGB_ink_param_2_RGB(self,mix):
         '''
@@ -118,6 +129,8 @@ class Helper:
         
         '''
         INK = Ink(use_torch = False)
+
+        assert mix.shape[-1] == 6, "Ink mixture should have 6 channels"
 
         mix_K = mix @ INK.absorption_RGB
         mix_S = mix @ INK.scattering_RGB
@@ -134,6 +147,44 @@ HELPER = Helper()
 def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: list, model_path:str):
     assert len(dimensions) == 3, "Dimensions must be a 3-tuple"
 
+    H,W,D = (148,258,160)
+
+    grid_bbox_center = np.array([ 0.00852721, -0.00794841,  0.29117552])
+    voxel_size = 0.009
+    # g_min = np.array([-0.0045, -0.0045, -0.0045])
+    # debug_ink = np.zeros((H,W,D,6))
+    # debug_ink[:,:,:,1] = 1.0 # pure yellow
+    # srgb = HELPER.mix_2_RGB_wavelength(debug_ink)
+    # print(srgb[0]*255)
+
+
+    debug_ink = np.zeros((H,W,D,6))
+    #CMYKWT
+    # we pick two slices of the ink mixture
+    debug_ink[:,129,:,1] = 0.1 # 50% yellow
+    debug_ink[:,129,:,4] = 0.9 # 50% white
+
+    debug_ink[:,:,80,1] = 0.1 # 50% yellow
+    debug_ink[:,:,80,4] = 0.9 # 50% white
+
+    debug_ink[72,:,:,1] = 0.1 # 50% yellow
+    debug_ink[72,:,:,4] = 0.9 # 50% white
+
+    debug_ink[:,:,:,5] = 1 - debug_ink.sum(axis=3) 
+
+
+    srgb = HELPER.mix_2_RGB_wavelength(debug_ink, keep_dim = True)
+    print(srgb[72,129,0]*255)
+
+
+    absorption, scattering = HELPER.RGB_ink_param_2_RGB(debug_ink)
+    # t =  a + s
+    sigma = scattering + absorption
+    # albedo = s / t
+    albedo = scattering / (sigma + 1e-8) # avoid division by zero
+
+    
+
     # ============= Create a gaussians centers as a point cloud and get its bounding box ============= 
     g_pos = gaussians.get_xyz.detach().cpu().numpy()
     g_pcd = o3d.geometry.PointCloud()
@@ -143,175 +194,211 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
     # ============= Choose the voxel size as the minimum of the bounding box dimensions ============= 
     voxel_size = (np.round(g_aabb_len / np.array(dimensions), 3)).min()
-    H, W, D = np.ceil(g_aabb_len / voxel_size).astype(int) + 1
+    H, W, D = np.ceil(g_aabb_len / voxel_size).astype(int)
     g_min = g_aabb.get_min_bound() # NOTE: this is the min bound we use throughout the code
-    print("The dimensions of the voxel grid are: ", H, W, D)
+    # print("The dimensions of the voxel grid are: ", H, W, D)
+    # print("The voxel size is: ", voxel_size)
 
-    # =============  Create a voxel grid ============= 
-    # Generate grid indices
-    i = np.arange(H).reshape(H, 1, 1)
-    j = np.arange(W).reshape(1, W, 1)
-    k = np.arange(D).reshape(1, 1, D)
+    # # =============  Create a voxel grid ============= 
+    # # Generate grid indices
+    # i = np.arange(H).reshape(H, 1, 1)
+    # j = np.arange(W).reshape(1, W, 1)
+    # k = np.arange(D).reshape(1, 1, D)
 
-    # Broadcast i, j, k to form a complete grid of coordinates
-    indices = np.stack(np.meshgrid(i, j, k, indexing='ij'), axis=-1)
+    # # Broadcast i, j, k to form a complete grid of coordinates
+    # indices = np.stack(np.meshgrid(i, j, k, indexing='ij'), axis=-1)
 
-    # Compute the upper left corner of each voxel
-    grid = indices * voxel_size + g_min
+    # # Compute the center of each voxel
+    # grid_center = (indices + 0.5) * voxel_size + g_min
 
-    # Compute the center of each voxel
-    grid_center = grid + voxel_size / 2
-
-    # Compute the center of the grid
-    grid_bbox_center =  grid.max(axis=(0,1,2)) - grid.min(axis=(0,1,2)) / 2
-    assert grid_bbox_center.shape == (3,), "Grid center shape should be (3,)"
-
-
-    assert grid.shape == (H, W, D, 3), "Grid shape should be (H, W, D, 3)"
-    assert grid_center.shape == (H, W, D, 3), "Grid center shape should be (H, W, D, 3)"
+    # # Compute the center of the grid
+    # grid_bbox_center = (grid_center[0,0,0] + grid_center[-1,-1,-1]) * 0.5
+    # assert grid_bbox_center.shape == (3,), "Grid center shape should be (3,)"
+    # assert grid_center.shape == (H, W, D, 3), "Grid center shape should be (H, W, D, 3)"
 
 
-    # ============= Voxel splatting =============
-    voxel_ink = np.zeros((H, W, D, 6))
-    voxel_opacity = np.zeros((H, W, D))
-    debug_opacity = np.zeros((H, W, D))
-    debug_ink = np.zeros((H, W, D, 6))
+    # # ============= Voxel splatting =============
+    # voxel_ink = np.zeros((H, W, D, 6))
+    # voxel_opacity = np.zeros((H, W, D))
+    # debug_opacity = np.zeros((H, W, D))
+    # debug_ink = np.zeros((H, W, D, 6))
 
-    # this is (N,6) containing the lower diagonal elements of the covariance matrix
-    # The index correspondce are:
-        # [:,0] <- [:,0,0]
-        # [:,1] <- [:,0,1]
-        # [:,2] <- [:,0,2]
-        # [:,3] <- [:,1,1]
-        # [:,4] <- [:,1,2]
-        # [:,5] <- [:,2,2]
-    g_cov_6 = gaussians.get_covariance().detach().cpu().numpy()
-    g_cov_diag = g_cov_6[:,[0,3,5]]
-    g_cov = g_cov_6[:,[0,1,2,1,3,4,2,4,5]].reshape(-1,3,3)
-    g_inv_cov = np.linalg.inv(g_cov)
-    assert g_cov_diag.shape == (g_pos.shape[0], 3), "Covariance diagonal shape should be (N,3)"
-    assert g_cov.shape == (g_pos.shape[0], 3, 3), "Covariance shape should be (N,3,3)"
+    # # this is (N,6) containing the lower diagonal elements of the covariance matrix
+    # # The index correspondce are:
+    #     # [:,0] <- [:,0,0]
+    #     # [:,1] <- [:,0,1]
+    #     # [:,2] <- [:,0,2]
+    #     # [:,3] <- [:,1,1]
+    #     # [:,4] <- [:,1,2]
+    #     # [:,5] <- [:,2,2]
+    # g_cov_6 = gaussians.get_covariance().detach().cpu().numpy()
+    # g_cov_diag = g_cov_6[:,[0,3,5]]
+    # g_cov = g_cov_6[:,[0,1,2,1,3,4,2,4,5]].reshape(-1,3,3)
+    # g_inv_cov = np.linalg.inv(g_cov)
+    # assert g_cov_diag.shape == (g_pos.shape[0], 3), "Covariance diagonal shape should be (N,3)"
+    # assert g_cov.shape == (g_pos.shape[0], 3, 3), "Covariance shape should be (N,3,3)"
 
-    # compute the min and max coordinates of aabb for each gaussian blob
-    g_aabb_min = g_pos - 3 * np.sqrt(g_cov_diag)
-    g_aabb_max = g_pos + 3 * np.sqrt(g_cov_diag)
+    # # compute the min and max coordinates of aabb for each gaussian blob
+    # g_aabb_min = g_pos - 3 * np.sqrt(g_cov_diag)
+    # g_aabb_max = g_pos + 3 * np.sqrt(g_cov_diag)
 
-    # prepare related data for voxel splatting
-    g_opacity = gaussians.get_opacity.detach().cpu().numpy()
-    g_ink = gaussians.get_ink_mix.detach().cpu().numpy()
-
-    for g_idx in tqdm(range(g_pos.shape[0])):
-        min_voxel_idx = np.floor((g_aabb_min[g_idx] - g_min) / voxel_size + 0.5).astype(int)
-        max_voxel_idx = np.ceil((g_aabb_max[g_idx] - g_min) / voxel_size - 0.5).astype(int)
-        related_voxels_idx = indices[min_voxel_idx[0]:max_voxel_idx[0], min_voxel_idx[1]:max_voxel_idx[1], min_voxel_idx[2]:max_voxel_idx[2]].reshape(-1,3)
-        related_voxels_center = grid_center[min_voxel_idx[0]:max_voxel_idx[0], min_voxel_idx[1]:max_voxel_idx[1], min_voxel_idx[2]:max_voxel_idx[2]].reshape(-1,3)
-
-        # # get the grid centers that are inside the aabb defined by min max coordinates
-        # mask = (grid_center >= g_aabb_min[g_idx]) & (grid_center <= g_aabb_max[g_idx])
-        # if mask.all(axis=-1).sum() == 0:
-        #     RuntimeError("Refine the voxel size! No voxel centers are inside the gaussian blob")
-        # related_voxels_idx = np.argwhere(mask.all(axis=-1))
-        # related_voxels_center = grid_center[mask.all(axis=-1)]
+    # # prepare related data for voxel splatting
+    # g_opacity = gaussians.get_opacity.detach().cpu().numpy()
+    # g_ink = gaussians.get_ink_mix.detach().cpu().numpy()
 
 
-        # # compute the 0-level set defined by the gaussian blob
-        # print((related_voxels_center - g_pos[g_idx]).shape)
-        # mahalanobis_dist =  (related_voxels_center - g_pos[g_idx])@ g_inv_cov[g_idx] @ (related_voxels_center - g_pos[g_idx]).T
-        # assert mahalanobis_dist.shape == (related_voxels_center.shape[0],), "Mahalanobis distance shape should be (#,), actually it is {}".format(mahalanobis_dist.shape)
-        # is_inside = mahalanobis_dist <= 9.0
-        # inside_voxels_idx = related_voxels_idx[is_inside]
+    # print("max opacity: ", g_opacity.max())
+    # print("min opacity: ", g_opacity.min())
 
-        # inside_probs = np.exp(-0.5 * mahalanobis_dist[is_inside])
-        # i,j,k = inside_voxels_idx[:,0], inside_voxels_idx[:,1], inside_voxels_idx[:,2]
-        # voxel_opacity[i,j,k] += inside_probs * g_opacity[g_idx]
-        # voxel_ink[i,j,k] += g_ink[g_idx] * inside_probs * g_opacity[g_idx]
+    # # print the ink mixture of min and max opacity
+    # max_opacity_idx = np.argmax(g_opacity)
+    # min_opacity_idx = np.argmin(g_opacity)
+    # print("max opacity ink: ", g_ink[max_opacity_idx])
+    # print("min opacity ink: ", g_ink[min_opacity_idx])
+
+    # eigen_val, eigen_vec = np.linalg.eigh(g_cov[max_opacity_idx])
+    # print("max opacity covariance eigen values: ", eigen_val)
+    # eigen_val, eigen_vec = np.linalg.eigh(g_cov[min_opacity_idx])
+    # print("min opacity covariance eigen values: ", eigen_val)
 
 
-        # method 2: Transform Grid Points, Check Inclusion Using the Ellipsoid Equation
-        eigen_val, eigen_vec = np.linalg.eigh(g_cov[g_idx]) # NOTE: eigen_vec's columns are the eigenvectors
+    # print("max transparent ink: ", g_ink[:,5].max())
+    # print("min transparent ink: ", g_ink[:,5].min())
+
+    # print("max white ink: ", g_ink[:,4].max())
+    # print("min white ink: ", g_ink[:,4].min())
+
+    # # return 0
+
+    # for g_idx in tqdm(range(g_pos.shape[0])):
+    #     # #  Method 1: inside aabb
+    #     # min_voxel_idx = np.floor((g_aabb_min[g_idx] - g_min) / voxel_size + 0.5).astype(int)
+    #     # max_voxel_idx = np.ceil((g_aabb_max[g_idx] - g_min) / voxel_size - 0.5).astype(int)
+
+    #     # Method 2:  3*3 around blob center
+    #     min_voxel_idx = np.floor((g_pos[g_idx] - g_min) / voxel_size - 0.5).astype(int)
+    #     max_voxel_idx = np.ceil((g_pos[g_idx] - g_min) / voxel_size + 0.5).astype(int)
+
+
+    #     related_voxels_idx = indices[min_voxel_idx[0]:max_voxel_idx[0], min_voxel_idx[1]:max_voxel_idx[1], min_voxel_idx[2]:max_voxel_idx[2]].reshape(-1,3)
+    #     related_voxels_center = grid_center[min_voxel_idx[0]:max_voxel_idx[0], min_voxel_idx[1]:max_voxel_idx[1], min_voxel_idx[2]:max_voxel_idx[2]].reshape(-1,3)
+       
+
+    #     # Transform Grid Points, Check Inclusion Using the Ellipsoid Equation
+    #     eigen_val, eigen_vec = np.linalg.eigh(g_cov[g_idx]) # NOTE: eigen_vec's columns are the eigenvectors
         
-        if (eigen_val <= 0).any() :
-            # here it is not a 3d gaussian. From the probability aspect, it could not splat to any voxel (prob = 0)
-            continue
+    #     if (eigen_val <= 0).any() :
+    #         # here it is not a 3d gaussian. From the probability aspect, it could not splat to any voxel (prob = 0)
+    #         continue
+
+    #     # # Work together with method 2
+    #     # inside_mahalanobis_dist = (related_voxels_center - g_pos[g_idx])@ g_inv_cov[g_idx] * (related_voxels_center - g_pos[g_idx])
+    #     # inside_mahalanobis_dist = np.sum(inside_mahalanobis_dist, axis=1)
+    #     # inside_idx =  related_voxels_idx.copy()
 
 
-
-        # Translate points by the negative of the mean
-        translated_points = related_voxels_center - g_pos[g_idx]
+    #     # Translate points by the negative of the mean
+    #     translated_points = related_voxels_center - g_pos[g_idx]
         
-        # Rotate points into the coordinate system of the blob
-        transformed_points = translated_points @ eigen_vec
+    #     # Rotate points into the coordinate system of the blob
+    #     transformed_points = translated_points @ eigen_vec
         
-        # Scale factors for the ellipsoid axes
+    #     # Scale factors for the ellipsoid axes
 
-        scales = 3 * np.sqrt(eigen_val) 
-
-        # if (eigen_val < 0).any() or np.isnan(eigen_val).any():
-        #     # print eigen_val that < 0 and corresponding covariance matrix
-        #     print("eigen_val: ", eigen_val)
-        #     print("cov: ", g_cov[g_idx])
-        #     RuntimeError("Eigenvalues should be positive")
+    #     scales = 3 * np.sqrt(eigen_val) 
 
         
-        # Check if each point is within the ellipsoid
-        is_inside_mask = ((transformed_points[:,0] / scales[0]) ** 2 + 
-                (transformed_points[:,1] / scales[1]) ** 2 + 
-                (transformed_points[:,2] / scales[2]) ** 2 <= 1.0)
+    #     # Check if each point is within the ellipsoid
+    #     is_inside_mask = ((transformed_points[:,0] / scales[0]) ** 2 + 
+    #             (transformed_points[:,1] / scales[1]) ** 2 + 
+    #             (transformed_points[:,2] / scales[2]) ** 2 <= 1.0)
         
         
-        # for the voxels that are inside the 0-level set, compute the ink mixture and opacity
-        temp_idx = np.argwhere(is_inside_mask).reshape(-1)
+    #     # for the voxels that are inside the 0-level set, compute the ink mixture and opacity
+    #     temp_idx = np.argwhere(is_inside_mask).reshape(-1)
         
-        inside_idx = related_voxels_idx[temp_idx]
-        inside_voxels_centers = related_voxels_center[temp_idx]
+    #     inside_idx = related_voxels_idx[temp_idx]
+    #     inside_voxels_centers = related_voxels_center[temp_idx]
 
-        inside_mahalanobis_dist = (inside_voxels_centers - g_pos[g_idx])@ g_inv_cov[g_idx] * (inside_voxels_centers - g_pos[g_idx])
-        inside_mahalanobis_dist = np.sum(inside_mahalanobis_dist, axis=1)
-        assert inside_mahalanobis_dist.shape == (inside_voxels_centers.shape[0],), "Mahalanobis distance shape should be (#,), actually it is {}".format(inside_mahalanobis_dist.shape)
-        assert (inside_mahalanobis_dist - 9.0 <= 1e-4 ).all(), "Mahalanobis distance should be smaller than 9.0, max {},  min {}".format(inside_mahalanobis_dist.max(), inside_mahalanobis_dist.min())
+    #     inside_mahalanobis_dist = (inside_voxels_centers - g_pos[g_idx])@ g_inv_cov[g_idx] * (inside_voxels_centers - g_pos[g_idx])
+    #     inside_mahalanobis_dist = np.sum(inside_mahalanobis_dist, axis=1)
+    #     assert inside_mahalanobis_dist.shape == (inside_voxels_centers.shape[0],), "Mahalanobis distance shape should be (#,), actually it is {}".format(inside_mahalanobis_dist.shape)
+    #     #  NOTE: This assertion may be need further consideration
+    #     # assert (inside_mahalanobis_dist - 9.0 <= 1e-4 ).all(), "Mahalanobis distance should be smaller than 9.0, eigen val{}, max {},  min {}".format(eigen_val, inside_mahalanobis_dist.max(), inside_mahalanobis_dist.min())
 
-        inside_probs = np.exp(-0.5 * inside_mahalanobis_dist)
-        i,j,k = inside_idx[:,0], inside_idx[:,1], inside_idx[:,2]
-        voxel_opacity[i,j,k] += inside_probs * g_opacity[g_idx]
-
-        voxel_ink[i,j,k] += g_ink[g_idx] * (inside_probs * g_opacity[g_idx])[:,None]
+    #     inside_probs = np.exp(-0.5 * inside_mahalanobis_dist)
+    #     i,j,k = inside_idx[:,0], inside_idx[:,1], inside_idx[:,2]
 
 
-    #  ============= Post process the ink mixture =============
-    # if opacity sum is larger than 1, normalize the ink mixture
-    mask = voxel_opacity > 1.0
-    voxel_ink[mask] /= voxel_opacity[mask][:,None]
-    voxel_opacity[mask] = 1.0
-    assert np.isnan(voxel_ink[mask]).any() == False, "Ink mixture should not have nan"
-    # prepare debug_opacity for visualization
-    debug_opacity = voxel_opacity.copy()
-    debug_ink = voxel_ink.copy()
 
-    # if opacity is smaller than 1, add transparent ink
-    mask = voxel_opacity < 1.0
-    print(mask.shape, voxel_ink[mask].shape)
-    trans_ink = 1.0 - voxel_ink[mask].sum(axis=1)
-    assert voxel_ink[mask].sum(axis=1).shape == voxel_opacity[mask].shape, "Ink mixture sum shape should be the same as opacity shape"
-    assert (trans_ink >= 0.0).all(), "The added transparent ink should be positive"
-    voxel_ink[mask,5] += trans_ink
+    #     voxel_opacity[i,j,k] += inside_probs * g_opacity[g_idx]
 
-    # visualize the voxel splatting result for debugging
-    debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
-    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting.png")
+    #     voxel_ink[i,j,k] += g_ink[g_idx] * (inside_probs * g_opacity[g_idx])[:,None]
 
 
-    # ============= Get the albedo and sigma =============
-    absorption, scattering = HELPER.RGB_ink_param_2_RGB(voxel_ink)
-    # t =  a + s
-    sigma = scattering + absorption
-    # albedo = s / t
-    albedo = scattering / (sigma + 1e-8) # avoid division by zero
-    assert sigma.shape == (H, W, D,3), sigma.shape
-    assert albedo.shape == (H, W, D,3), albedo.shape
-    #  check if there are any nan values in sigma and albedo
-    assert not np.isnan(sigma).any()
-    assert not np.isnan(albedo).any()
+    # #  ============= Post process the ink mixture =============
+    # # store the original ink mixture for debugging
+    # np.save(os.path.join(model_path,"voxel_ink.npy"), voxel_ink)
 
+    # # if opacity sum is larger than 1, normalize the ink mixture
+    # mask = voxel_opacity > 1.0
+    # voxel_ink[mask] /= voxel_opacity[mask][:,None]
+    # voxel_opacity[mask] = 1.0
+    # assert np.isnan(voxel_ink[mask]).any() == False, "Ink mixture should not have nan"
+    # # prepare debug_opacity for visualization
+    # debug_opacity = voxel_opacity.copy()
+    # debug_ink = voxel_ink.copy()
+
+    # # if opacity is smaller than 1, add transparent ink
+    # mask = voxel_opacity < 1.0
+    # trans_ink = 1.0 - voxel_ink[mask].sum(axis=1)
+    # assert voxel_ink[mask].sum(axis=1).shape == voxel_opacity[mask].shape, "Ink mixture sum shape should be the same as opacity shape"
+    # assert (trans_ink >= 0.0).all(), "The added transparent ink should be positive"
+    # voxel_ink[mask,5] += trans_ink
+
+    # # now the ink mixture of each voxel sum should be 1
+    # assert np.abs(voxel_ink.sum(axis=3) - 1.0).max() < 1e-6, "Ink mixture should sum to 1.0"
+
+    # np.save(os.path.join(model_path,"voxel_ink_post.npy"), voxel_ink)
+
+
+
+
+    # # # visualize the voxel splatting result for debugging
+    # # debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
+    # # HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting_alpha.png")
+    # # debug_alpha_one = np.ones_like(debug_opacity) - (debug_opacity == 0).astype(int)
+    # # HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting.png")
+    
+    # # ============= Get the albedo and sigma =============
+
+    
+    # print("Computing albedo and sigma")
+    # # voxel_ink = np.load(os.path.join(model_path,"voxel_ink_post.npy"))
+
+    # absorption, scattering = HELPER.RGB_ink_param_2_RGB(voxel_ink)
+    # # t =  a + s
+    # sigma = scattering + absorption
+    # # albedo = s / t
+    # albedo = scattering / (sigma + 1e-8) # avoid division by zero
+
+
+    # # Debug use the color as albedo and opacity as sigma
+    
+    # albedo = HELPER.mix_2_RGB_wavelength(debug_ink, keep_dim = True)
+    # sigma = debug_opacity.reshape(H,W,D,1)
+    # print("<<<<<<<<<<<< DEBUG albedo and sigma >>>>>>>>>>>>")
+
+    # # # Debug set sigma and albedo to pure yellow ink.
+    # # debug_mask = voxel_opacity > 0.0
+    # # sigma[debug_mask] = np.array([2.25, 3.75, 19.0])
+    # # albedo[debug_mask] = np.array([0.997, 0.995, 0.15])
+
+    # assert sigma.shape == (H, W, D,3), sigma.shape
+    # assert albedo.shape == (H, W, D,3), albedo.shape
+    # #  check if there are any nan values in sigma and albedo
+    # assert not np.isnan(sigma).any()
+    # assert not np.isnan(albedo).any()
 
 
     # ============= Save the data to vol =============
@@ -319,12 +406,13 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     if not os.path.exists(path):
         os.makedirs(path)
 
+    print("Converting data to vol format")
     c_sigma = convert_data_to_C_indexing_style(sigma, 3, (H, W, D))
     c_albedo = convert_data_to_C_indexing_style(albedo, 3, (H, W, D))
 
     print("Writing to vol files")
-    write_to_vol_file(os.path.join(path, "albedo.vol"), c_albedo, 3, g_min, (H,W,D), voxel_size=voxel_size)
-    write_to_vol_file(os.path.join(path, "sigma.vol"), c_sigma, 3, g_min, (H,W,D), voxel_size=voxel_size)
+    write_to_vol_file(os.path.join(path, "albedo.vol"), c_albedo, 3, g_min, np.array([H,W,D]), voxel_size=voxel_size)
+    write_to_vol_file(os.path.join(path, "sigma.vol"), c_sigma, 3, g_min, np.array([H,W,D]), voxel_size=voxel_size)
 
     print("Done converting gaussians to volume representation")
 
@@ -332,7 +420,15 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # ============= Create a mitsuba scene =============
 
     # We render from the vol path
-    scene_dict = get_mixing_mitsuba_scene_dict(10, 
+    # NOTE: VERY IMPORTANT!!!!!!! the sigma_t scale factor should be 20!!!!!
+
+    # # For debug
+    # voxel_size = 0.009
+    # H,W,D = (148, 258, 160)
+    # grid_bbox_center = np.array([ 0.00852721, -0.00794841, 0.29117552])
+
+    # here we assume the scene is in 5 cm, scale = 5cm / 1mm = 50
+    scene_dict = get_mixing_mitsuba_scene_dict(50, 
                                             grid_bbox_center,
                                             np.array([H,W,D])*voxel_size,
                                             os.path.join(model_path,"mitsuba","albedo.vol"), 
@@ -343,11 +439,12 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     #                                        '3dgs_lego_train/try/color.vol', 
     #                                         '3dgs_lego_train/try/density.vol')
     
-    camera_dict = get_camera_dict(viewcameras[26])
+    camera_dict = get_camera_dict(viewcameras[69])
     
     # ================Rendering scene================
+    print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 16, view_idx=0)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=0)
 
     return 0
 

@@ -48,7 +48,7 @@ def get_mixing_mitsuba_scene_dict(sigam_t_scale, bbox_center, bbox_scale, albedo
         'emitter': {'type': 'constant',
                     'radiance': {
                         'type': 'rgb',
-                        'value': 0.5,
+                        'value': 1.0,
                         }
                     }
     }
@@ -69,8 +69,10 @@ def get_camera_dict(viewpoint_camera):
             'far_clip': 100.0,
             'film': {
                 'type': 'hdrfilm',
-                'width': int(viewpoint_camera.image_width), 
-                'height': int(viewpoint_camera.image_height),
+                # 'width': int(viewpoint_camera.image_width), 
+                # 'height': int(viewpoint_camera.image_height),
+                'width': 512, 
+                'height': 512,
                 'filter': {'type': 'gaussian'}
             }
         }
@@ -128,49 +130,56 @@ def render_mitsuba_scene(scene_dict, sensor_dict, bbox_scale, filepath = None, s
 
 def write_to_vol_file(filename, values, channels, min_coords, dimensions, voxel_size=0.05):
     xmin, ymin, zmin = min_coords
-    xmax, ymax, zmax = (dimensions - 1) * voxel_size + min_coords
+    # xmax, ymax, zmax = (dimensions - 1) * voxel_size + min_coords
+    xmax, ymax, zmax = dimensions * voxel_size + min_coords
 
     with open(filename, 'wb') as f:
-            f.write(b'VOL')
-            version = 3
-            type_ = 1
-            f.write(version.to_bytes(1, byteorder='little'))
-            f.write(np.int32(type_).newbyteorder('<').tobytes())
+        f.write(b'VOL')
+        version = 3
+        type_ = 1
+        f.write(version.to_bytes(1, byteorder='little'))
+        f.write(np.int32(type_).newbyteorder('<').tobytes())
 
-            f.write(np.int32(dimensions[0]).newbyteorder('<').tobytes())
-            f.write(np.int32(dimensions[1]).newbyteorder('<').tobytes())
-            f.write(np.int32(dimensions[2]).newbyteorder('<').tobytes())
+        f.write(np.int32(dimensions[0]).newbyteorder('<').tobytes())
+        f.write(np.int32(dimensions[1]).newbyteorder('<').tobytes())
+        f.write(np.int32(dimensions[2]).newbyteorder('<').tobytes())
 
-            f.write(np.int32(channels).newbyteorder('<').tobytes())
+        f.write(np.int32(channels).newbyteorder('<').tobytes())
 
-            f.write(np.float32(xmin).newbyteorder('<').tobytes())
-            f.write(np.float32(ymin).newbyteorder('<').tobytes())
-            f.write(np.float32(zmin).newbyteorder('<').tobytes())
-            f.write(np.float32(xmax).newbyteorder('<').tobytes())
-            f.write(np.float32(ymax).newbyteorder('<').tobytes())
-            f.write(np.float32(zmax).newbyteorder('<').tobytes())
+        f.write(np.float32(xmin).newbyteorder('<').tobytes())
+        f.write(np.float32(ymin).newbyteorder('<').tobytes())
+        f.write(np.float32(zmin).newbyteorder('<').tobytes())
+        f.write(np.float32(xmax).newbyteorder('<').tobytes())
+        f.write(np.float32(ymax).newbyteorder('<').tobytes())
+        f.write(np.float32(zmax).newbyteorder('<').tobytes())
 
-            for val in values:
-                f.write(np.float32(val).newbyteorder('<').tobytes())
+        for val in values:
+            f.write(np.float32(val).newbyteorder('<').tobytes())
 
-            f.close()
+        f.close()
     print('Done writing to vol file')  
 
 
 
 def convert_data_to_C_indexing_style(old_data,channels,dimensions):
+    '''
+        input: old_data: (xres, yres, zres, channels)
+        output: data: (xres * yres * zres * channels)
+    '''
     xres, yres, zres = dimensions
 
-    # An empty array to hold the reorganized data
-    data = np.zeros(xres * yres * zres * channels)
+    data = np.transpose(old_data, (2, 1, 0, 3)).reshape(xres * yres * zres * channels)
 
-    # Iterate over each position in 3D space and each channel
-    for xpos in range(xres):
-        for ypos in range(yres):
-            for zpos in range(zres):
-                for chan in range(channels):
-                    # idx = (xpos * yres * zres + ypos * zres + zpos)
-                    new_idx = ((zpos * yres + ypos) * xres + xpos) * channels + chan
-                    # Store the RGB value at the new index
-                    data[new_idx] = old_data[xpos,ypos,zpos][chan]
+    # # An empty array to hold the reorganized data
+    # data = np.zeros(xres * yres * zres * channels)
+
+    # # Iterate over each position in 3D space and each channel
+    # for xpos in range(xres):
+    #     for ypos in range(yres):
+    #         for zpos in range(zres):
+    #             for chan in range(channels):
+    #                 # idx = (xpos * yres * zres + ypos * zres + zpos)
+    #                 new_idx = ((zpos * yres + ypos) * xres + xpos) * channels + chan
+    #                 # Store the RGB value at the new index
+    #                 data[new_idx] = old_data[xpos,ypos,zpos][chan]
     return data

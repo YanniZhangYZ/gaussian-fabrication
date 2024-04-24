@@ -21,6 +21,7 @@ import torch.nn.functional as F
 import torchvision
 from utils.loss_utils import l1_loss, ssim
 from train import prepare_output_and_logger
+import matplotlib.pyplot as plt
 
 # from mitsuba_conversion import debug_plot_g
 
@@ -46,7 +47,7 @@ def debug_plot(pos, debug_color, debug_alpha, path):
     ax.set_title('3D Voxel Data')
     print("Ploting voxel representation")
     rgba = np.concatenate((debug_color.reshape(-1, 3), debug_alpha.reshape(-1, 1)), axis=1)
-    ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=rgba, s=1.0)
+    ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=rgba, s=0.4)
     plt.savefig(path)
 
 
@@ -63,6 +64,11 @@ def ink_to_RGB(mix, H, W):
     # C, H, W = mix.shape
     # mix = mix.permute(1,2,0).view(-1,C)
 
+    # no transparent and white ink
+    # mix = mix[:,:4]
+    mix =  mix[:,:5]
+
+
     if (mix < 0.0).any():
         mask = torch.nonzero(mix < 0.0)
         print(mask)
@@ -72,9 +78,9 @@ def ink_to_RGB(mix, H, W):
     
     # mix: (H*W,6) array of ink mixtures
     # K
-    mix_K = mix @ INK.absorption_matrix
+    mix_K = mix @ INK.absorption_matrix[:5]
     # S
-    mix_S = mix @ INK.scattering_matrix + 1e-8
+    mix_S = mix @ INK.scattering_matrix[:5] + 1e-8
 
     #equation 2
     # NOTE: Here we add 1e-8 just to make sure it is differentiable (sqrt(0) has no grad)
@@ -191,10 +197,6 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     assert current_render_rgba.shape == gt_image_rgba.shape, (current_render_rgba.shape, gt_image_rgba.shape)
     Ll1 = l1_loss(current_render_rgba, gt_image_rgba)
 
-
-
-
-
     
     # original_GT= Image.open('lego/train/r_25.png')
     # origin_GT_RGBA = np.array(original_GT.convert("RGBA"))/ 255.0
@@ -245,7 +247,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
      # set up rasterization configuration
     # views = scene.getTrainCameras()
-    # view_idx = 26
+    # view_idx = 2
     # viewpoint_camera = views[view_idx]
     # image_height=int(viewpoint_camera.image_height)
     # image_width=int(viewpoint_camera.image_width)
@@ -253,13 +255,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
     gaussians._xyz.requires_grad = False
+    gaussians._scaling.requires_grad = False
+    gaussians._rotation.requires_grad = False
 
     l = [
         # {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
         {'params': [gaussians._ink_mix], 'lr': lr, "name": "ink"},
         {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
-        {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
-        {'params': [gaussians._rotation], 'lr': lr, "name": "rotation"}
+        # {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
+        # {'params': [gaussians._rotation], 'lr': lr, "name": "rotation"}
     ]
 
     optimizer = torch.optim.Adam(l, lr=0.01, eps=1e-15) 
@@ -418,7 +422,20 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             alpha_ones = np.ones(pos.shape[0])
             debug_plot(pos, debug_color, debug_alpha, os.path.join(imgs_path,"gaussian_init_data_alpha.png"))
             debug_plot(pos, debug_color, alpha_ones, os.path.join(imgs_path,"gaussian_init_data.png"))
+
+            debug_alpha = np.squeeze(out_alpha.detach().cpu().numpy())
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            cax = ax.imshow(debug_alpha, cmap='viridis') 
+            fig.colorbar(cax)
+            fig.savefig(os.path.join(imgs_path,'alpha_channel_image.png'))
             scene.save(i+1)
+
+            #  check if the ink mix contains no white ink and transparent ink
+            debug_ink = gaussians.get_ink_mix.detach().cpu().numpy()
+            # assert (debug_ink[:, 4] == 0.0).all(), "There should not be white ink in the ink mix"
+            assert (debug_ink[:, 5] == 0.0).all(), "There should not transparent ink in the ink mix"
+
 
 
 
@@ -429,7 +446,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             # save them as a gif with PIL
             # frames = [Image.fromarray(frame.transpose(1, 2, 0)).resize((100,100), Image.LANCZOS) for frame in frames]
             frames = [Image.fromarray(frame.transpose(1, 2, 0)) for frame in frames]
-
             out_dir = os.path.join(os.getcwd(), "renders")
             os.makedirs(out_dir, exist_ok=True)
             frames[0].save(
@@ -454,7 +470,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 if __name__ == "__main__":
     # NOTE: Here we add eval just to using the 100 training cameras. It is easier to find the original gt image this way
     '''
-    python train_torch.py -m 3dgs_lego_train -s lego --iterations 3000 --sh_degree 0  --eval -r 8
+    python train_torch.py -m 3dgs_lego_train -s lego --iterations 3000 --sh_degree 0  --eval -w -r 8 
     '''
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")

@@ -38,7 +38,13 @@ class GaussianModel:
             return actual_covariance
 
         def ink_norm(x):
-            return F.softmax(x, dim=-1).clamp(0.0, 1.0)
+            #TODO: here we don't use transparent ink for now
+            # return F.softmax(x, dim=-1).clamp(0.0, 1.0)
+            new_x = torch.zeros((x.shape[0], 6), device=x.device)
+            new_x[:, :4] = F.softmax(x[:,:4], dim=-1).clamp(0.0, 1.0) * 0.5
+            new_x[:, 4] = 0.5
+            return new_x
+
         
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -209,6 +215,9 @@ class GaussianModel:
         # features[:, :3, 0 ] = fused_color
         # features[:, 3:, 1:] = 0.0
 
+        scales = torch.tensor(np.asarray(pcd.scales)).float().cuda()
+        rots = torch.tensor(np.asarray(pcd.rots)).float().cuda()
+
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
@@ -220,7 +229,7 @@ class GaussianModel:
 
         #  NOTE: HERE!!!!!!!!!
         ink_mix = torch.zeros((fused_point_cloud.shape[0], 6), dtype=torch.float, device="cuda")
-        ink_mix = ink_mix + torch.tensor([0.1, 0.1, 0.1, 0.1, 0.5, 0.1], dtype=torch.float, device="cuda")
+        ink_mix = ink_mix + torch.tensor([0.1, 0.1, 0.1, 0.1, 0.6, 0.0], dtype=torch.float, device="cuda")
         
         
 

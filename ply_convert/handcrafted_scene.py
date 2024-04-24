@@ -279,7 +279,8 @@ def generate_3d_bitmap_voxel_grid(min_coords, max_coords, gaussian_blobs,voxel_s
 
 
 def generate_hetero_voxel_grid(min_coords, max_coords, gaussian_blobs,voxel_size=0.05):
-    dimensions = np.ceil((max_coords- min_coords) / voxel_size).astype(int) + 1
+    # dimensions = np.ceil((max_coords- min_coords) / voxel_size).astype(int) + 1
+    dimensions = np.ceil((max_coords- min_coords) / voxel_size).astype(int)
     bbox_center = (min_coords + max_coords) / 2
     print("Voxel grid dimensions: ", dimensions)
     print("Voxel grid center: ", bbox_center)
@@ -330,6 +331,8 @@ def generate_hetero_voxel_grid(min_coords, max_coords, gaussian_blobs,voxel_size
                 albedo[x,y,z] = s / (a + s)
                 sigma_t[x,y,z] = a + s
 
+    path = 'ply_convert/Czech_color_fitting/meta/'
+    os.makedirs(path, exist_ok=True)
     np.save('ply_convert/Czech_color_fitting/meta/pos.npy', pos)
     np.save('ply_convert/Czech_color_fitting/meta/color.npy', colors)
     np.save('ply_convert/Czech_color_fitting/meta/albedo.npy', albedo)
@@ -404,7 +407,7 @@ def convert_data_to_C_indexing_style(old_data,channels,dimensions):
 
 def write_to_vol_file(filename, values, channels, min_coords, dimensions, voxel_size=0.05):
     xmin, ymin, zmin = min_coords
-    xmax, ymax, zmax = (dimensions - 1) * voxel_size + min_coords
+    xmax, ymax, zmax = dimensions * voxel_size + min_coords
 
     with open(filename, 'wb') as f:
             f.write(b'VOL')
@@ -740,7 +743,7 @@ def run_comparison():
     '''
 
     scene_scale = 1
-    voxel_size = 0.05 * scene_scale
+    voxel_size = 0.2 * scene_scale
     experiment_idx = 1
     folderpath = 'ply_convert/comparison/set{}/'.format(experiment_idx)
     metapath = folderpath + 'meta/'
@@ -793,7 +796,7 @@ def run_comparison():
                                                (max_coords - min_coords),
                                                 metapath + 'albedo.vol',
                                                 metapath + 'sigma_t.vol')
-    render_mitsuba_scene(scene_dict,max_coords - min_coords, filepath = renderpath, set_spp = 512)
+    render_mitsuba_scene(scene_dict,max_coords - min_coords, filepath = renderpath, set_spp = 128)
 
 
 def run_bitmap():
@@ -856,7 +859,7 @@ def run_bitmap():
                                                 metapath + 'albedo.vol',
                                                 metapath + 'sigma_t.vol',
                                                 filter_type = 'nearest')
-    render_mitsuba_scene(scene_dict,max_coords - min_coords, filepath = renderpath, set_spp = 512)
+    render_mitsuba_scene(scene_dict,max_coords - min_coords, filepath = renderpath, set_spp = 128)
 
 if __name__ == '__main__':
     
