@@ -52,15 +52,12 @@ def debug_plot(pos, debug_color, debug_alpha, path):
 
 
 def ink_to_RGB(mix, H, W):
-    # back_ground_mask = torch.all(mix == 0.0, axis=0).int()
-    # blob_mask = 1 - back_ground_mask
-    # transparent_mask = 1.0 - mix.sum(axis=0)
-    # transparent_blob_mask = blob_mask - mix.sum(axis=0)
-    # # NOTE: The training image has transparent background!
-    # # NOTE: Therefore we add white ink only to the place where there is a blob!
-    # # mix[4,:,:] = mix[4,:,:] + transparent_mask  # This is used in the original ink_to_rgb.py file
-    # mix[4,:,:] = mix[4,:,:] + transparent_blob_mask
-
+    '''
+    mix: (H*W,6) array of ink mixtures
+    output: (3,H,W) array of RGB values
+    
+    '''
+    # mix: (H*W,6) array of ink mixtures
     # C, H, W = mix.shape
     # mix = mix.permute(1,2,0).view(-1,C)
 
@@ -93,34 +90,45 @@ def ink_to_RGB(mix, H, W):
         print(mask)
         print(temp[mask[0]])
         assert False, "sqrt negative value has nan"
+    
+    # # manual linear interpolation, for each element in the row vector of R_mix, we compute the mean between the two values and insert it in between
+    # R_mix = torch.cat([R_mix, (R_mix[:,1:] + R_mix[:,:-1]) / 2], dim=1)
+    R_mix = torch.cat([R_mix, (R_mix[:,1:] + R_mix[:,:-1]) / 2], dim=1)
+    R_mix = torch.cat([R_mix, torch.zeros((R_mix.shape[0], INK.w_num - R_mix.shape[1]), dtype=torch.float, device= 'cuda')], dim=1)
+    assert (R_mix[:,71] == 0.0).all(), "The 71th element should be 0.0"
 
-    # Saunderson’s correction reflectance coefficient, commonly used values
-    k1 = 0.04
-    k2 = 0.6
-    # equation 6
-    R_mix = (1 - k1) * (1 - k2) * R_mix / (1 - k2 * R_mix)
 
     with torch.no_grad():
         # equation 3 - 5
-        x_D56 = INK.x_observer * INK.sampled_illuminant_D65
+        x_D56 = INK.x_observer * INK.sampled_illuminant_D65 * INK.w_delta
         # x_D56 /= np.sum(x_D56)
-        y_D56 = INK.y_observer * INK.sampled_illuminant_D65
+        y_D56 = INK.y_observer * INK.sampled_illuminant_D65 * INK.w_delta
         # y_D56 /= np.sum(y_D56)
-        z_D56 = INK.z_observer * INK.sampled_illuminant_D65
+        z_D56 = INK.z_observer * INK.sampled_illuminant_D65 * INK.w_delta
         # z_D56 /= np.sum(z_D56)
     X = R_mix @ x_D56
     Y = R_mix @ y_D56
     Z = R_mix @ z_D56
 
+    X = X / INK.w_num
+    Y = Y / INK.w_num
+    Z = Z / INK.w_num
+
     XYZ = torch.stack([X,Y,Z],axis=1).T
-    Y_D56 = torch.sum(y_D56)
 
     # Convert XYZ to sRGB, Equation 7
     with torch.no_grad():
         sRGB_matrix = torch.tensor([[3.2406, -1.5372, -0.4986],
                                 [-0.9689, 1.8758, 0.0415],
                                 [0.0557, -0.2040, 1.0570]], device="cuda")
-    sRGB = ((sRGB_matrix @ XYZ) / Y_D56).T
+    sRGB = (sRGB_matrix @ XYZ).T
+
+     # Apply gamma correction to convert linear RGB to sRGB
+    sRGB = torch.where(sRGB <= 0.0031308,
+                    12.92 * sRGB,
+                    1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
+        
+
     sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
     return sRGB
 

@@ -41,8 +41,7 @@ class GaussianModel:
             #TODO: here we don't use transparent ink for now
             # return F.softmax(x, dim=-1).clamp(0.0, 1.0)
             new_x = torch.zeros((x.shape[0], 6), device=x.device)
-            new_x[:, :4] = F.softmax(x[:,:4], dim=-1).clamp(0.0, 1.0) * 0.5
-            new_x[:, 4] = 0.5
+            new_x[:, :5] = F.softmax(x[:,:5], dim=-1).clamp(0.0, 1.0)
             return new_x
 
         
@@ -178,33 +177,46 @@ class GaussianModel:
                 print(temp[mask[0]])
                 assert False, "sqrt negative value has nan"
 
-        # Saunderson’s correction reflectance coefficient, commonly used values
-        k1 = 0.04
-        k2 = 0.6
-        # equation 6
-        R_mix = (1 - k1) * (1 - k2) * R_mix / (1 - k2 * R_mix)
+        # # manual linear interpolation, for each element in the row vector of R_mix, we compute the mean between the two values and insert it in between
+        # R_mix = torch.cat([R_mix, (R_mix[:,1:] + R_mix[:,:-1]) / 2], dim=1)
+        R_mix = torch.cat([R_mix, (R_mix[:,1:] + R_mix[:,:-1]) / 2], dim=1)
+        R_mix = torch.cat([R_mix, torch.zeros((R_mix.shape[0], INK.w_num - R_mix.shape[1]), dtype=torch.float, device= 'cuda')], dim=1)
+        assert (R_mix[:,71] == 0.0).all(), "The 71th element should be 0.0"
+
+
 
         with torch.no_grad():
             # equation 3 - 5
-            x_D56 = INK.x_observer * INK.sampled_illuminant_D65
+            x_D56 = INK.x_observer * INK.sampled_illuminant_D65 * INK.w_delta
             # x_D56 /= np.sum(x_D56)
-            y_D56 = INK.y_observer * INK.sampled_illuminant_D65
+            y_D56 = INK.y_observer * INK.sampled_illuminant_D65 * INK.w_delta
             # y_D56 /= np.sum(y_D56)
-            z_D56 = INK.z_observer * INK.sampled_illuminant_D65
+            z_D56 = INK.z_observer * INK.sampled_illuminant_D65 * INK.w_delta
             # z_D56 /= np.sum(z_D56)
         X = R_mix @ x_D56
         Y = R_mix @ y_D56
         Z = R_mix @ z_D56
 
-        XYZ = torch.stack([X,Y,Z],axis=1).T
-        Y_D56 = torch.sum(y_D56)
+        X = X / INK.w_num
+        Y = Y / INK.w_num
+        Z = Z / INK.w_num
 
+        XYZ = torch.stack([X,Y,Z],axis=1).T
+    
         # Convert XYZ to sRGB, Equation 7
         with torch.no_grad():
             sRGB_matrix = torch.tensor([[3.2406, -1.5372, -0.4986],
                                     [-0.9689, 1.8758, 0.0415],
                                     [0.0557, -0.2040, 1.0570]], device="cuda")
-        sRGB = ((sRGB_matrix @ XYZ) / Y_D56).T
+        sRGB = (sRGB_matrix @ XYZ).T
+
+        # Apply gamma correction to convert linear RGB to sRGB
+        sRGB = torch.where(sRGB <= 0.0031308,
+                        12.92 * sRGB,
+                        1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
+        
+        sRGB = torch.clip(sRGB,0,1)
+        
         return sRGB.detach().cpu().numpy()
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
