@@ -1,6 +1,9 @@
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+import torch
+
+from utils.graphics_utils import getWorld2View2
 
 import mitsuba as mi
 
@@ -19,7 +22,7 @@ def get_mixing_mitsuba_scene_dict(sigam_t_scale, bbox_center, bbox_scale, albedo
         'integrator': {'type': 'volpathmis'},
         'mix_cude': {
             'type': 'cube',
-            'to_world': T.scale(bbox_scale / 2).translate(bbox_center),
+            'to_world': T.scale(bbox_scale / 2).translate(bbox_center * 2 / bbox_scale),
 
             'bsdf': {'type': 'null'},
             'interior': {
@@ -27,6 +30,7 @@ def get_mixing_mitsuba_scene_dict(sigam_t_scale, bbox_center, bbox_scale, albedo
                 'albedo': {
                     'type': 'gridvolume',
                     'filename': albedo_file_path,
+                    # 'grid': albedo_file_path,
                     'use_grid_bbox': True,
                     # 'filter_type': 'nearest',
                     # 'to_world': T.translate(list(bbox_center)).rotate([0, 1, 0], 0).scale(list(bbox_scale)),
@@ -36,6 +40,7 @@ def get_mixing_mitsuba_scene_dict(sigam_t_scale, bbox_center, bbox_scale, albedo
                 'sigma_t': {
                     'type': 'gridvolume',
                     'filename': sigma_t_file_path,
+                    # 'grid': sigma_t_file_path,
                     'use_grid_bbox': True,
                     # 'filter_type': 'nearest',
                     # 'to_world':T.translate(list(bbox_center)).rotate([0, 1, 0], 0).scale(list(bbox_scale)),
@@ -56,23 +61,34 @@ def get_mixing_mitsuba_scene_dict(sigam_t_scale, bbox_center, bbox_scale, albedo
     return scene_dict
 
 def get_camera_dict(viewpoint_camera):
-    sensor_rot = T.rotate([1, 0, 0], 180)
-    to_world_np = viewpoint_camera.world_view_transform.detach().cpu().numpy().T
-    print(to_world_np)
+    R = viewpoint_camera.R
+    T_ = viewpoint_camera.T
+
+    # Mitsuba and 3dgs camera use different coordinate system, one left-handed and the other right-handed
+
+    #flipping the z axis of R
+    flip_z_R =  np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]])
+    R = R @ flip_z_R
+    #flipping the z axis of T_
+    T_ = T_ * np.array([-1, -1, 1])
+
+
+    to_world_np = getWorld2View2(R, T_)
     to_world_np = np.linalg.inv(to_world_np)
     to_world = T(to_world_np)
     camera_dict = {
             'type': 'perspective',
             'fov': 40,
-            'to_world': sensor_rot @ to_world,
+            # 'to_world': sensor_rot @ to_world,
+            'to_world': to_world,
             'near_clip': 0.01,
             'far_clip': 100.0,
             'film': {
                 'type': 'hdrfilm',
                 # 'width': int(viewpoint_camera.image_width), 
                 # 'height': int(viewpoint_camera.image_height),
-                'width': 512, 
-                'height': 512,
+                'width': 800, 
+                'height': 800,
                 'filter': {'type': 'gaussian'}
             }
         }

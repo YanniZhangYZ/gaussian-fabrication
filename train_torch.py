@@ -22,6 +22,7 @@ import torchvision
 from utils.loss_utils import l1_loss, ssim
 from train import prepare_output_and_logger
 import matplotlib.pyplot as plt
+from scene.cameras import Camera
 
 # from mitsuba_conversion import debug_plot_g
 
@@ -263,15 +264,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
     gaussians._xyz.requires_grad = False
-    gaussians._scaling.requires_grad = False
-    gaussians._rotation.requires_grad = False
+    # gaussians._scaling.requires_grad = False
+    # gaussians._rotation.requires_grad = False
 
     l = [
         # {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
         {'params': [gaussians._ink_mix], 'lr': lr, "name": "ink"},
         {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
-        # {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
-        # {'params': [gaussians._rotation], 'lr': lr, "name": "rotation"}
+        {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
+        {'params': [gaussians._rotation], 'lr': lr, "name": "rotation"}
     ]
 
     optimizer = torch.optim.Adam(l, lr=0.01, eps=1e-15) 
@@ -443,8 +444,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             debug_ink = gaussians.get_ink_mix.detach().cpu().numpy()
             # assert (debug_ink[:, 4] == 0.0).all(), "There should not be white ink in the ink mix"
             assert (debug_ink[:, 5] == 0.0).all(), "There should not transparent ink in the ink mix"
-
-
 
 
     if save_imgs:

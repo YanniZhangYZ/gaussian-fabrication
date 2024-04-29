@@ -36,6 +36,25 @@ class Helper:
         ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=rgba, s=1.0)
         plt.savefig(path)
 
+    def debug_opacity_histogram(self, opacity, path):
+        print("Ploting opacity histogram")
+        opacity = opacity.reshape(-1)
+        import matplotlib.pyplot as plt
+        plt.hist(opacity, bins=100)
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.hist(opacity, bins=100,)
+        bins = np.linspace(np.min(opacity), np.max(opacity), 31)  # 100 bins
+        counts, bin_edges, patches = ax.hist(opacity, bins=bins)
+        ax.set_xticks(bin_edges)
+        ax.set_yticks(range(0, int(max(counts))+1, max(1, int(max(counts)/10))))
+        plt.xticks(rotation=45)
+        ax.set_title('Histogram of Opacity')
+        ax.set_xlabel('Values')
+        ax.set_ylabel('Frequency')
+        plt.savefig(path)
+
     def mix_2_RGB_wavelength(self, mix, keep_dim = False):
         INK = Ink(use_torch = False)
         assert mix.shape[-1] == 6, "Ink mixture should have 6 channels"
@@ -191,12 +210,15 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     assert grid_bbox_center.shape == (3,), "Grid center shape should be (3,)"
     assert grid_center.shape == (H, W, D, 3), "Grid center shape should be (H, W, D, 3)"
 
+    print("The grid center is: ", grid_bbox_center)
+
 
     # ============= Voxel splatting =============
     voxel_ink = np.zeros((H, W, D, 6))
     voxel_opacity = np.zeros((H, W, D))
     debug_opacity = np.zeros((H, W, D))
     debug_ink = np.zeros((H, W, D, 6))
+
 
     # this is (N,6) containing the lower diagonal elements of the covariance matrix
     # The index correspondce are:
@@ -246,13 +268,13 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # return 0
 
     for g_idx in tqdm(range(g_pos.shape[0])):
-        # #  Method 1: inside aabb
-        # min_voxel_idx = np.floor((g_aabb_min[g_idx] - g_min) / voxel_size + 0.5).astype(int)
-        # max_voxel_idx = np.ceil((g_aabb_max[g_idx] - g_min) / voxel_size - 0.5).astype(int)
+        #  Method 1: inside aabb
+        min_voxel_idx = np.floor((g_aabb_min[g_idx] - g_min) / voxel_size + 0.5).astype(int)
+        max_voxel_idx = np.ceil((g_aabb_max[g_idx] - g_min) / voxel_size - 0.5).astype(int)
 
-        # Method 2:  3*3 around blob center
-        min_voxel_idx = np.floor((g_pos[g_idx] - g_min) / voxel_size - 0.5).astype(int)
-        max_voxel_idx = np.ceil((g_pos[g_idx] - g_min) / voxel_size + 0.5).astype(int)
+        # # Method 2:  3*3 around blob center
+        # min_voxel_idx = np.floor((g_pos[g_idx] - g_min) / voxel_size - 0.5).astype(int)
+        # max_voxel_idx = np.ceil((g_pos[g_idx] - g_min) / voxel_size + 0.5).astype(int)
 
 
         related_voxels_idx = indices[min_voxel_idx[0]:max_voxel_idx[0], min_voxel_idx[1]:max_voxel_idx[1], min_voxel_idx[2]:max_voxel_idx[2]].reshape(-1,3)
@@ -266,10 +288,10 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
             # here it is not a 3d gaussian. From the probability aspect, it could not splat to any voxel (prob = 0)
             continue
 
-        # Work together with method 2
-        inside_mahalanobis_dist = (related_voxels_center - g_pos[g_idx])@ g_inv_cov[g_idx] * (related_voxels_center - g_pos[g_idx])
-        inside_mahalanobis_dist = np.sum(inside_mahalanobis_dist, axis=1)
-        inside_idx =  related_voxels_idx.copy()
+        # # Work together with method 2
+        # inside_mahalanobis_dist = (related_voxels_center - g_pos[g_idx])@ g_inv_cov[g_idx] * (related_voxels_center - g_pos[g_idx])
+        # inside_mahalanobis_dist = np.sum(inside_mahalanobis_dist, axis=1)
+        # inside_idx =  related_voxels_idx.copy()
 
 
         # Translate points by the negative of the mean
@@ -315,6 +337,11 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # store the original ink mixture for debugging
     # np.save(os.path.join(model_path,"voxel_ink.npy"), voxel_ink)
 
+    print("Post processing the ink mixture")
+
+
+
+
     # if opacity sum is larger than 1, normalize the ink mixture
     mask = voxel_opacity > 1.0
     voxel_ink[mask] /= voxel_opacity[mask][:,None]
@@ -323,6 +350,14 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # prepare debug_opacity for visualization
     debug_opacity = voxel_opacity.copy()
     debug_ink = voxel_ink.copy()
+
+
+
+    # HELPER.debug_opacity_histogram(g_opacity, "opacity_histogram_g_blob.png")
+    # debug_mask =  voxel_opacity > 0.0
+    # HELPER.debug_opacity_histogram(voxel_opacity[debug_mask], "opacity_histogram_has_val_voxel.png")
+
+
 
     # if opacity is smaller than 1, add transparent ink
     mask = voxel_opacity < 1.0
@@ -339,11 +374,11 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
 
 
-    # # visualize the voxel splatting result for debugging
-    # debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
-    # HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting_alpha.png")
-    # debug_alpha_one = np.ones_like(debug_opacity) - (debug_opacity == 0).astype(int)
-    # HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting.png")
+    # visualize the voxel splatting result for debugging
+    debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
+    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting_alpha.png")
+    debug_alpha_one = np.ones_like(debug_opacity) - (debug_opacity == 0).astype(int)
+    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting.png")
     
     # ============= Get the albedo and sigma =============
 
@@ -384,6 +419,8 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     print("Converting data to vol format")
     c_sigma = convert_data_to_C_indexing_style(sigma, 3, (H, W, D))
     c_albedo = convert_data_to_C_indexing_style(albedo, 3, (H, W, D))
+    print("Done converting data to C indexing style")
+
 
     print("Writing to vol files")
     write_to_vol_file(os.path.join(path, "albedo.vol"), c_albedo, 3, g_min, np.array([H,W,D]), voxel_size=voxel_size)
@@ -402,7 +439,16 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # H,W,D = (148, 258, 160)
     # grid_bbox_center = np.array([ 0.00852721, -0.00794841, 0.29117552])
 
+    # voxel_size = 0.007
+    # H,W,D = (191, 332, 205)
+    # grid_bbox_center = np.array([ 0.01102721,-0.00694841, 0.28867552])
+
     # here we assume the scene is in 5 cm, scale = 5cm / 1mm = 50
+
+    # mi_albedo = mi.VolumeGrid(mi.TensorXf(c_albedo.reshape(D,W,H,3)))
+    # mi_sigma = mi.VolumeGrid(mi.TensorXf(c_sigma.reshape(D,W,H,3)))
+
+
     scene_dict = get_mixing_mitsuba_scene_dict(50, 
                                             grid_bbox_center,
                                             np.array([H,W,D])*voxel_size,
@@ -419,8 +465,21 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # ================Rendering scene================
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=0)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=0)
 
+    
+    camera_dict = get_camera_dict(viewcameras[73])
+    print("Rendering scene")
+
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=1)
+
+    camera_dict = get_camera_dict(viewcameras[64])
+    print("Rendering scene")
+
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=2)
+
+    
+    
     return 0
 
 
@@ -431,7 +490,7 @@ def mitsuba_gaussians(dataset : ModelParams, iteration : int, pipeline : Pipelin
 
         cameras = scene.getTrainCameras()
 
-        voxel_splatting(gaussians, [150,150,150], cameras, dataset.model_path)
+        voxel_splatting(gaussians, [200,200,200], cameras, dataset.model_path)
 
 
 
