@@ -92,7 +92,9 @@ class Ink(nn.Module):
                     )
         # NOTE: in mitusba, the input vol file only reads values between 0 and 1, so we divide by 20 to make sure the values are in that range
         # NOTE: but in rendering we should put the 20 back
-        
+
+        self.albedo_RGB = albedo_RGB
+        self.sigma_RGB = sigma_RGB
         self.scattering_RGB = albedo_RGB * sigma_RGB
         self.absorption_RGB = sigma_RGB - self.scattering_RGB
         

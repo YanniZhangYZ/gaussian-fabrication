@@ -36,8 +36,8 @@ class Helper:
         ax.scatter(pos[:,0], pos[:,1], pos[:,2], c=rgba, s=1.0)
         plt.savefig(path)
 
-    def debug_opacity_histogram(self, opacity, path):
-        print("Ploting opacity histogram")
+    def debug_histogram(self, opacity, path):
+        print("Ploting histogram")
         opacity = opacity.reshape(-1)
         import matplotlib.pyplot as plt
         plt.hist(opacity, bins=100)
@@ -353,9 +353,11 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
 
 
-    # HELPER.debug_opacity_histogram(g_opacity, "opacity_histogram_g_blob.png")
+    # HELPER.debug_histogram(g_opacity, "opacity_histogram_g_blob.png")
+    # HELPER.debug_histogram(g_ink[:,4], "white_histogram_g_blob.png")
     # debug_mask =  voxel_opacity > 0.0
-    # HELPER.debug_opacity_histogram(voxel_opacity[debug_mask], "opacity_histogram_has_val_voxel.png")
+    # HELPER.debug_histogram(voxel_opacity[debug_mask], "opacity_histogram_has_val_voxel.png")
+    # assert False, "stop here"
 
 
 
@@ -460,12 +462,12 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     #                                        '3dgs_lego_train/try/color.vol', 
     #                                         '3dgs_lego_train/try/density.vol')
     
-    camera_dict = get_camera_dict(viewcameras[69])
+    # camera_dict = get_camera_dict(viewcameras[69])
     
     # ================Rendering scene================
-    print("Rendering scene")
+    # print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=0)
+    # render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=0)
 
     
     camera_dict = get_camera_dict(viewcameras[73])
@@ -473,10 +475,10 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
     render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=1)
 
-    camera_dict = get_camera_dict(viewcameras[64])
-    print("Rendering scene")
+    # camera_dict = get_camera_dict(viewcameras[64])
+    # print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=2)
+    # render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=2)
 
     
     
