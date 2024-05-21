@@ -10,8 +10,7 @@ from mitsuba_utils import write_to_vol_file, convert_data_to_C_indexing_style
 
 import mitsuba as mi
 
-mi.set_variant('cuda_ad_rgb') #AttributeError: jit_init_thread_state(): the LLVM backend is inactive because the LLVM shared library ("libLLVM.so") could not be found! Set the DRJIT_LIBLLVM_PATH environment variable to specify its path.
-# mi.set_variant('scalar_rgb')
+mi.set_variant('cuda_ad_rgb')
 
 
 from mitsuba import ScalarTransform4f as T
@@ -53,17 +52,18 @@ class MitsubaDict:
             assert idx is not None, "Need to specify the index of the cube"
             
             # repeat sigma and albedo to have the same shape as the gridvolume 20, 20, 1, 3
-            sigma_ = np.empty((40,40,1,3), dtype = np.float32)
-            albedo_ = np.empty((40,40,1,3), dtype = np.float32)
+            dim0, dim1, dim2 = int(self.H / 0.001), int(self.W / 0.001), int(self.D / 0.001)
+            sigma_ = np.empty((dim0, dim1, dim2,3), dtype = np.float32)
+            albedo_ = np.empty((dim0, dim1, dim2,3), dtype = np.float32)
             sigma_[:,:,:] = sigma
             albedo_[:,:,:] = albedo
 
-            c_sigma = convert_data_to_C_indexing_style(sigma_, 3, (40, 40, 1))
-            c_albedo = convert_data_to_C_indexing_style(albedo_, 3, (40, 40, 1))
+            c_sigma = convert_data_to_C_indexing_style(sigma_, 3, (dim0, dim1, dim2))
+            c_albedo = convert_data_to_C_indexing_style(albedo_, 3, (dim0, dim1, dim2))
             albedo_file_path = os.path.join("checkerboard/meta", f"albedo_{idx}.vol")
             sigma_t_file_path = os.path.join("checkerboard/meta", f"sigma_{idx}.vol")
-            write_to_vol_file(albedo_file_path, c_albedo, 3, cube_min, np.array([40,40,1]), voxel_size=0.007)
-            write_to_vol_file(sigma_t_file_path, c_sigma, 3, cube_min, np.array([40,40,1]), voxel_size=0.007)
+            write_to_vol_file(albedo_file_path, c_albedo, 3, cube_min, np.array([dim0, dim1, dim2]), voxel_size=0.007)
+            write_to_vol_file(sigma_t_file_path, c_sigma, 3, cube_min, np.array([dim0, dim1, dim2]), voxel_size=0.007)
 
             cube = {
                 'type': 'cube',
@@ -83,7 +83,11 @@ class MitsubaDict:
                             'use_grid_bbox': True,
                             'filter_type': 'nearest'
                         },
-                        'scale': sigma_t_scale
+                        'scale': sigma_t_scale,
+                        'phase': {
+                            'type': 'hg',
+                            'g': 0.4
+                        }
                     }
             }
             print("sigma_t_scale", sigma_t_scale)
@@ -118,7 +122,11 @@ class MitsubaDict:
                             'type': 'spectrum',
                             'filename': sigma_t_file_path,
                         },
-                        'scale': sigma_t_scale
+                        'scale': sigma_t_scale,
+                        'phase': {
+                            'type': 'hg',
+                            'g': 0.4
+                        }
                     }
             }
         return cube
@@ -131,7 +139,7 @@ class MitsubaDict:
         # Center of the background plane
         bg_center_x = 0
         bg_center_y = 0
-        bg_center_z = -self.D*(1 + 1e-6)  # behind the checkerboard
+        bg_center_z = -self.D*(1 + 0.2)  # behind the checkerboard
 
         scale = np.array([bg_w, bg_h, self.D])
         center = np.array([bg_center_x, bg_center_y, bg_center_z])
@@ -141,18 +149,18 @@ class MitsubaDict:
             'to_world': T.scale(scale).translate(center/scale),
             'bsdf': {'type': 'diffuse',
                     'reflectance': {
-                            # 'type': 'rgb',
-                            # 'value': [1.0, 1.0, 1.0]
-                            "type" : "checkerboard",
-                            "color0" : {
-                                "type" : "rgb",
-                                "value" : [1, 1, 1]
-                            },
-                            "color1" : {
-                                "type" : "rgb",
-                                "value" : [0.5, 0.5, 0.5]
-                            },
-                            "to_uv": T.scale(16),
+                            'type': 'rgb',
+                            'value': [1.0, 1.0, 1.0]
+                            # "type" : "checkerboard",
+                            # "color0" : {
+                            #     "type" : "rgb",
+                            #     "value" : [1, 1, 1]
+                            # },
+                            # "color1" : {
+                            #     "type" : "rgb",
+                            #     "value" : [0.5, 0.5, 0.5]
+                            # },
+                            # "to_uv": T.scale(16),
                         }
                     }
         }
@@ -462,8 +470,12 @@ def render_checkerboard(mixtures, use_vol = False, get_KM = False, use_KM_spectr
 
     assert mixtures.shape[0] == num_x * num_y, "Number of mixtures should be equal to the number of cubes in the checkerboard"
 
-    D = 0.007
-    H = W = D * 20
+    # D = 0.007
+    # H = W = D * 20
+
+
+    D = 0.01
+    H = W = 0.007 * 20
 
     miDict = MitsubaDict(H, W, D, num_x, num_y)
     km_helper = KM_Helper()
@@ -497,7 +509,7 @@ def render_checkerboard(mixtures, use_vol = False, get_KM = False, use_KM_spectr
 
 
     if use_KM_spectra:
-        sigma_t_scale = 1500.0
+        sigma_t_scale = 150.0
         absorption, scattering, wavelength = km_helper.get_wavelength_KM_spectra_4_mitsuba(mixtures)
         sigma = scattering + absorption
         # albedo = s / t
@@ -540,6 +552,7 @@ def render_checkerboard(mixtures, use_vol = False, get_KM = False, use_KM_spectr
         assert (sigma <= 1.0).all(), "Sigma should smaller than 1, but got max sigma: {}".format(sigma.max())
     else:
         sigma_t_scale = 50.0
+        # sigma_t_scale = 10.0
 
     print("the used sigma_t_scale is: ", sigma_t_scale)
 
@@ -566,7 +579,91 @@ def render_checkerboard(mixtures, use_vol = False, get_KM = False, use_KM_spectr
 
 
 
+
+def test_CMY_33():
+    mixtures = np.array([[1.0, 1.0, 1.0, 0.0, 0.0, 0.0]]) / 3.0
+    # mixtures = np.array([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0]])
+
+    INK = Ink(use_torch = False)
+
+    albedo_RGB = INK.albedo_RGB
+    sigma_RGB = INK.sigma_RGB
+    scattering_RGB = INK.scattering_RGB
+    absorption_RGB = INK.absorption_RGB
+    
+
+    assert (abs(albedo_RGB * sigma_RGB - scattering_RGB) < 1e-6).all(), "scattering should be equal to albedo * sigma"
+    assert (abs(( 1.0 - albedo_RGB ) * sigma_RGB - absorption_RGB)< 1e-6) .all(), "absorption should be equal to sigma - scattering"
+
+
+    # compute from sigma_rgb and albedo_rgb
+    as_absorption =  mixtures @ (( 1.0 - albedo_RGB ) * sigma_RGB)
+    as_scattering = mixtures @ (albedo_RGB * sigma_RGB)
+
+    # compute from absorption and scattering
+    mix_K = mixtures @ absorption_RGB
+    mix_S = mixtures @ scattering_RGB
+
+    assert (abs(as_absorption - mix_K) < 1e-6).all(), "absorption should be equal to sigma - scattering"
+    assert (abs(as_scattering - mix_S) < 1e-6).all(), "scattering should be equal to albedo * sigma"
+
+
+    as_albedo = as_scattering / (as_absorption + as_scattering)
+    mix_albedo = mix_S / (mix_K + mix_S)
+
+    as_sigma = as_absorption + as_scattering
+    mix_sigma = mix_K + mix_S
+
+    assert (abs(as_albedo - mix_albedo) < 1e-6).all(), "albedo should be equal to scattering / (absorption + scattering)"
+    
+
+    print(as_albedo)
+    print(mix_albedo)
+
+    print(as_sigma)
+    print(mix_sigma)
+
+   # Create a 100x100 image with this RGB color
+    image_array = np.tile(as_albedo * 255, (100, 100, 1))
+
+    # Convert the numpy array to a PIL Image
+    from PIL import Image
+    image = Image.fromarray(np.uint8(image_array))
+
+    # Save the image
+    image.save('checkerboard/33CMY.png')
+
+
+    # check RGB color given albedo from scattering-aware 3d print equation (4)
+
+    Cs = 0.04526
+    ak = np.array([0.065773, 0.201198, 0.279264, 0.251997, 0.201767])
+    bk = [1.569383, 6.802855, 28.61815, 142.0079, 1393.165]
+    
+    r_exp_bk = np.array([mix_albedo[0][0]**b for b in bk])
+    g_exp_bk = np.array([mix_albedo[0][1]**b for b in bk])
+    b_exp_bk = np.array([mix_albedo[0][2]**b for b in bk])
+
+    r = Cs + (1.0 - Cs) * np.sum(ak * r_exp_bk)
+    g = Cs + (1.0 - Cs) * np.sum(ak * g_exp_bk)
+    b = Cs + (1.0 - Cs) * np.sum(ak * b_exp_bk)
+    rgb = np.array([r,g,b])*255.0
+
+    print(rgb)
+
+    image_array = np.tile(rgb, (100, 100, 1))
+
+    # Convert the numpy array to a PIL Image
+    from PIL import Image
+    image = Image.fromarray(np.uint8(image_array))
+
+    # Save the image
+    image.save('checkerboard/33CMY_eq4.png')
+
+
+
 if __name__ == "__main__":
+
     # randome 24 ink mixtures, each has 6 channels and sum to 1
     mixtures = np.empty((24, 6))
     mixtures[0] = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]) # C

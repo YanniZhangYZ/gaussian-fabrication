@@ -240,6 +240,8 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 
         # NOTE: HACK here we load the trained 3dgs lego model here directly
         plydata = PlyData.read('lego/rgb_pcd_result/point_cloud.ply')
+        # plydata = PlyData.read('t2/rgb_pcd_result/point_cloud.ply')
+
 
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                         np.asarray(plydata.elements[0]["y"]),

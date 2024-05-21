@@ -253,21 +253,16 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     print("max opacity ink: ", g_ink[max_opacity_idx])
     print("min opacity ink: ", g_ink[min_opacity_idx])
 
-    eigen_val, eigen_vec = np.linalg.eigh(g_cov[max_opacity_idx])
-    print("max opacity covariance eigen values: ", eigen_val)
-    eigen_val, eigen_vec = np.linalg.eigh(g_cov[min_opacity_idx])
-    print("min opacity covariance eigen values: ", eigen_val)
 
+    # get the idx of the gaussians that have opacity larger than 0.0367
+    # mask = g_opacity.reshape(-1) > 0.1
+    # test_idx = np.argwhere(mask).reshape(-1)
+    
 
-    print("max transparent ink: ", g_ink[:,5].max())
-    print("min transparent ink: ", g_ink[:,5].min())
-
-    print("max white ink: ", g_ink[:,4].max())
-    print("min white ink: ", g_ink[:,4].min())
-
-    # return 0
-
+    # for g_idx in tqdm(test_idx):
     for g_idx in tqdm(range(g_pos.shape[0])):
+    
+
         #  Method 1: inside aabb
         min_voxel_idx = np.floor((g_aabb_min[g_idx] - g_min) / voxel_size + 0.5).astype(int)
         max_voxel_idx = np.ceil((g_aabb_max[g_idx] - g_min) / voxel_size - 0.5).astype(int)
@@ -378,9 +373,10 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
     # visualize the voxel splatting result for debugging
     debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
-    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting_alpha.png")
+    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting/voxel_splatting_alpha.png")
     debug_alpha_one = np.ones_like(debug_opacity) - (debug_opacity == 0).astype(int)
-    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting.png")
+    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting/voxel_splatting.png")
+
     
     # ============= Get the albedo and sigma =============
 
@@ -463,11 +459,12 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     #                                         '3dgs_lego_train/try/density.vol')
     
     # camera_dict = get_camera_dict(viewcameras[69])
-    
-    # ================Rendering scene================
-    # print("Rendering scene")
+    camera_dict = get_camera_dict(viewcameras[0])
 
-    # render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=0)
+    # ================Rendering scene================
+    print("Rendering scene")
+
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=0)
 
     
     camera_dict = get_camera_dict(viewcameras[73])
@@ -475,10 +472,10 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
     render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=1)
 
-    # camera_dict = get_camera_dict(viewcameras[64])
-    # print("Rendering scene")
+    camera_dict = get_camera_dict(viewcameras[64])
+    print("Rendering scene")
 
-    # render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=2)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=2)
 
     
     
@@ -505,6 +502,9 @@ if __name__ == "__main__":
     '''
         python voxel_splatting.py -m 3dgs_lego_train -w --iteration 3000 --sh_degree 0
         python voxel_splatting.py -m 3dgs_lego_train --iteration 3000 --sh_degree 0
+        python voxel_splatting.py -m 3dgs_pattern_train --iteration 3000 --sh_degree 0
+        python voxel_splatting.py -m 3dgs_lego_train_albedo --iteration 3000 --sh_degree 0
+
     '''
 
     # Set up command line argument parser

@@ -106,6 +106,10 @@ class Ink(nn.Module):
                 self.x_observer = torch.tensor(self.x_observer, dtype=torch.float32, device=self.device)
                 self.y_observer = torch.tensor(self.y_observer, dtype=torch.float32, device=self.device)
                 self.z_observer = torch.tensor(self.z_observer, dtype=torch.float32, device=self.device)
+                self.albedo_RGB = torch.tensor(self.albedo_RGB, dtype=torch.float32, device=self.device)
+                self.sigma_RGB = torch.tensor(self.sigma_RGB, dtype=torch.float32, device=self.device)
+                self.scattering_RGB = torch.tensor(self.scattering_RGB, dtype=torch.float32, device=self.device)
+                self.absorption_RGB = torch.tensor(self.absorption_RGB, dtype=torch.float32, device=self.device)
 
 
 Ink()

@@ -134,6 +134,47 @@ def ink_to_RGB(mix, H, W):
     return sRGB
 
 
+def ink_to_albedo(mix, H, W):
+    '''
+    mix: (H*W,6) array of ink mixtures
+    output: (3,H,W) array of RGB values
+    
+    '''
+    # mix: (H*W,6) array of ink mixtures
+    # C, H, W = mix.shape
+    # mix = mix.permute(1,2,0).view(-1,C)
+
+    # no transparent and white ink
+    # mix = mix[:,:4]
+    mix =  mix[:,:5]
+
+
+    if (mix < 0.0).any():
+        mask = torch.nonzero(mix < 0.0)
+        print(mask)
+        print(mix[mask[0]])
+        # print(temp[mask[0]])
+        assert False, "Negative ink concentration inside ink_to_RGB"
+    
+    # mix: (H*W,6) array of ink mixtures
+    # K
+    mix_K = mix @ INK.absorption_RGB[:5]
+    # S
+    mix_S = mix @ INK.scattering_RGB[:5]
+
+    if torch.isnan( mix_S / (mix_K + mix_S + 1e-8)).any():
+        temp =  mix_S / (mix_K + mix_S + 1e-8)
+        mask = torch.nonzero(torch.isnan(temp))
+        # print(R_mix.shape)
+        print(mask)
+        print(temp[mask[0]])
+        assert False, "albedo has nan"
+
+    albedo =  mix_S / (mix_K + mix_S + 1e-8)
+    sRGB = torch.clip(albedo,0,1).view(H, W, 3).permute(2,0,1)
+    return sRGB
+
+
 
 
 from kornia.color import rgb_to_lab
@@ -161,6 +202,7 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     mix = mix.permute(1,2,0).view(-1,C)
 
     current_render = ink_to_RGB(mix, H, W)
+    # current_render = ink_to_albedo(mix, H, W)
 
 
     # NOTE: we need to take special care to the backgroud color
@@ -337,6 +379,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             block_width = B_SIZE,
         )
 
+        # assert False, print(xys.shape, depths.shape, radii.shape, conics.shape, num_tiles_hit.shape, cov3d.shape)
 
         # NOTE: in the most ideal case, for the place that GT has no color, the rasterize result alpha should be 0
         ink_mix, out_alpha = rasterize_gaussians(
@@ -446,6 +489,35 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             assert (debug_ink[:, 5] == 0.0).all(), "There should not transparent ink in the ink mix"
 
 
+
+            depth_map = rasterize_gaussians(
+                xys,
+                depths,
+                radii,
+                conics,
+                num_tiles_hit,
+                depths[:, None].repeat(1, 6),
+                gaussians.get_opacity,
+                image_height,
+                image_width,
+                B_SIZE,
+                background,
+            )
+            depth_map = depth_map.permute(2, 0, 1)[0:1, :, :]
+
+            debug_depth_map = np.squeeze(depth_map.detach().cpu().numpy())
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            cax = ax.imshow(debug_depth_map, cmap='viridis') 
+            fig.colorbar(cax)
+            fig.savefig(os.path.join(imgs_path,'depth_map.png'))
+
+
+
+
+
+
+
     if save_imgs:
             
             print(frames[0].shape)
@@ -478,6 +550,8 @@ if __name__ == "__main__":
     # NOTE: Here we add eval just to using the 100 training cameras. It is easier to find the original gt image this way
     '''
     python train_torch.py -m 3dgs_lego_train -s lego --iterations 3000 --sh_degree 0  --eval -w -r 8 
+    python train_torch.py -m 3dgs_pattern_train -s pattern --iterations 3000 --sh_degree 0  --eval -w -r 8 
+
     '''
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
