@@ -699,9 +699,9 @@ if __name__ == "__main__":
    
     assert (abs(mixtures.sum(axis = 1) - 1.0) < 1e-6).all(), "Ink mixtures should sum to 1, but have sum: {}".format(mixtures.sum(axis = 1))
 
-    render_checkerboard(mixtures)
+    # render_checkerboard(mixtures)
 
-    # render_checkerboard(mixtures, use_vol = True)
+    render_checkerboard(mixtures, use_vol = True)
     # render_checkerboard(mixtures, get_KM = True)
     # render_checkerboard(mixtures, use_KM_spectra = True)
 

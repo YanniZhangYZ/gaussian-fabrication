@@ -60,7 +60,7 @@ def get_mixing_mitsuba_scene_dict(sigam_t_scale, bbox_center, bbox_scale, albedo
 
     return scene_dict
 
-def get_camera_dict(viewpoint_camera):
+def get_camera_dict(viewpoint_camera, H = 800, W = 800):
     R = viewpoint_camera.R
     T_ = viewpoint_camera.T
 
@@ -87,8 +87,8 @@ def get_camera_dict(viewpoint_camera):
                 'type': 'hdrfilm',
                 # 'width': int(viewpoint_camera.image_width), 
                 # 'height': int(viewpoint_camera.image_height),
-                'width': 800, 
-                'height': 800,
+                'width': W, 
+                'height': H,
                 'filter': {'type': 'gaussian'}
             }
         }
@@ -96,7 +96,7 @@ def get_camera_dict(viewpoint_camera):
 
 
 
-def render_mitsuba_scene(scene_dict, sensor_dict, bbox_scale, filepath = None, set_spp = 256, view_idx = None):
+def render_mitsuba_scene(scene_dict, sensor_dict, bbox_scale, filepath = None, set_spp = 256, view_idx = None, save_exr = True):
     assert filepath is not None, "need to specify a filepath to save the rendered images"
     if not os.path.exists(filepath):
         os.makedirs(filepath)
@@ -139,7 +139,8 @@ def render_mitsuba_scene(scene_dict, sensor_dict, bbox_scale, filepath = None, s
     # else:
     img = mi.render(scene_ref, sensor=sensor, spp=set_spp)
     name = os.path.join(filepath,'view' + str(view_idx))
-    mi.Bitmap(img).write(name+'.exr')
+    if save_exr:
+        mi.Bitmap(img).write(name+'.exr')
     mi.util.write_bitmap(name+'.png', img)
 
 

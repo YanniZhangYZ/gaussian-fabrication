@@ -44,6 +44,13 @@ class GaussianModel:
             new_x[:, :5] = F.softmax(x[:,:5], dim=-1).clamp(0.0, 1.0)
             return new_x
 
+            # new_x = torch.zeros((x.shape[0], 6), device=x.device)
+            # temp = torch.cat([x[:,:4], x[:,5:]], dim=1)
+            # temp = F.softmax(temp, dim=-1).clamp(0.0, 1.0)
+            # new_x[:, :4] = temp[:, :4]
+            # new_x[:, 5] = temp[:, 4]
+            # return new_x
+
         
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -118,6 +125,16 @@ class GaussianModel:
     
     @property
     def get_rotation(self):
+        if not (self._rotation.norm(dim=-1) > 0).all():
+            # get the index where the norm is <=0 and print the norms
+            nan_mask = torch.isnan(self._rotation.norm(dim=-1))
+            nan_idex = torch.nonzero(nan_mask)
+            print(nan_idex.shape, nan_mask.sum())
+            print(nan_idex)
+            print(self._rotation[nan_idex])
+            
+
+            
         assert (self._rotation.norm(dim=-1) > 0).all(), "Rotation is not normalizable"
         return self.rotation_activation(self._rotation)
     

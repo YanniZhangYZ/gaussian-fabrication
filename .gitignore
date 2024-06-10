@@ -23,4 +23,6 @@ checkerboard
 pattern
 3dgs_lego_train_albedo
 center_checker
-
+measured_spectrum/raw_data
+blob_thickness_test
+checker70

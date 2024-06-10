@@ -65,6 +65,11 @@ def ink_to_RGB(mix, H, W):
     # no transparent and white ink
     # mix = mix[:,:4]
     mix =  mix[:,:5]
+    # no white ink
+    # assert mix[:,4].sum() == 0.0, "The white ink should be 0.0"
+    # mix = torch.cat([mix[:,:4], mix[:,5:]], dim=1)
+
+    # assert mix.shape[1] == 5, "The ink mix should have 5 channels"
 
 
     if (mix < 0.0).any():
@@ -77,8 +82,13 @@ def ink_to_RGB(mix, H, W):
     # mix: (H*W,6) array of ink mixtures
     # K
     mix_K = mix @ INK.absorption_matrix[:5]
+    # mix_K = mix @ INK.absorption_matrix
+    # mix_K = mix @ torch.cat((INK.absorption_matrix[:4], INK.absorption_matrix[5:]), dim=0)
     # S
     mix_S = mix @ INK.scattering_matrix[:5] + 1e-8
+    # mix_S = mix @ INK.scattering_matrix + 1e-8
+    # mix_S = mix @ torch.cat((INK.scattering_matrix[:4], INK.scattering_matrix[5:]), dim=0) + 1e-8
+
 
     #equation 2
     # NOTE: Here we add 1e-8 just to make sure it is differentiable (sqrt(0) has no grad)
@@ -124,13 +134,25 @@ def ink_to_RGB(mix, H, W):
                                 [0.0557, -0.2040, 1.0570]], device="cuda")
     sRGB = (sRGB_matrix @ XYZ).T
 
-     # Apply gamma correction to convert linear RGB to sRGB
-    sRGB = torch.where(sRGB <= 0.0031308,
-                    12.92 * sRGB,
-                    1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
-        
+    # Apply gamma correction to convert linear RGB to sRGB
+    mask = sRGB > 0.0031308
+    sRGB[~mask] = sRGB[~mask] * 12.92
+    sRGB[mask] = 1.055 * torch.pow(sRGB[mask], 1 / 2.4) - 0.055
+    # sRGB = torch.where(sRGB <= 0.0031308,
+    #                 12.92 * sRGB,
+    #                 1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
 
     sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
+
+    if torch.isnan(sRGB).any():
+        temp = sRGB.clone().detach()
+        mask = torch.nonzero(torch.isnan(temp))
+        # print(R_mix.shape)
+        print(mask)
+        print(temp[mask[0]])
+        assert False, "sRGB has nan"
+
+
     return sRGB
 
 
@@ -189,7 +211,7 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
 
     #TODO: deal with error in the future
     if (mix.sum(dim=0) > 1.0 + 1e-1).any():
-        print(mix.sum(dim=0).max())
+        print(mix.sum(dim=0).max()) 
         raise RuntimeError("TODO: normalize the ink")
 
 
@@ -280,6 +302,9 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
 
 
 def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_imgs=False):
+    # enable anomaly detection
+    # torch.autograd.set_detect_anomaly(True)
+
     tb_writer = prepare_output_and_logger(dataset)
     lr = 0.01
     gaussians = GaussianModel(0)
@@ -306,6 +331,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
     gaussians._xyz.requires_grad = False
+    # gaussians._opacity.requires_grad = False
     # gaussians._scaling.requires_grad = False
     # gaussians._rotation.requires_grad = False
 
@@ -425,6 +451,14 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
         optimizer.zero_grad()
         loss.backward()
+        
+        # Check if there is nan in the gradient
+        if torch.isnan(gaussians._rotation.grad).any():
+            mask = torch.nonzero(torch.isnan(gaussians._rotation.grad))
+            print("rotation grad has nan: ", mask)
+            print(gaussians._rotation.grad[mask[0]])
+            assert False, "rotation grad has nan"
+
         torch.cuda.synchronize()
         optimizer.step()
         print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
@@ -514,10 +548,59 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
 
+            cams = scene.getTrainCameras().copy()
+            for idx in [69,73,64]:
+                viewpoint_camera = cams[idx]
 
+                
+                image_height=int(viewpoint_camera.image_height)
+                image_width=int(viewpoint_camera.image_width)
+                fy = fov2focal(viewpoint_camera.FoVy, image_height)
+                fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
-
-
+                (
+                    xys,
+                    depths,
+                    radii,
+                    conics,
+                    compensation,
+                    num_tiles_hit,
+                    cov3d,
+                ) = project_gaussians(
+                    means3d = gaussians.get_xyz,
+                    scales = gaussians.get_scaling,
+                    glob_scale = 1,
+                    quats = gaussians.get_rotation,
+                    viewmat = viewpoint_camera.world_view_transform.T,
+                    fx = fx,
+                    fy = fy,
+                    cx = image_height/2,
+                    cy = image_width/2,
+                    img_height = image_height,
+                    img_width = image_width,
+                    block_width = B_SIZE,
+                )
+                ink_mix, out_alpha = rasterize_gaussians(
+                        xys,
+                        depths,
+                        radii,
+                        conics,
+                        num_tiles_hit,
+                        gaussians.get_ink_mix,
+                        gaussians.get_opacity,
+                        # opaque_opacity,
+                        image_height,
+                        image_width,
+                        B_SIZE,
+                        background,
+                        return_alpha=True
+                    )
+                
+                final_ink_mix = ink_mix.permute(2, 0, 1)
+                loss, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera, gt_images_folder_path)
+                torchvision.utils.save_image(out_img, os.path.join(imgs_path, f"3000_optimize_{idx}.png"))
+                print("Saved image for camera ", idx)
+                
     if save_imgs:
             
             print(frames[0].shape)

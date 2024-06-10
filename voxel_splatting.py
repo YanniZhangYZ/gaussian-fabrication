@@ -112,9 +112,12 @@ class Helper:
         sRGB = (sRGB_matrix @ XYZ).T
 
         # Apply gamma correction to convert linear RGB to sRGB
-        sRGB = np.where(sRGB <= 0.0031308,
-                      12.92 * sRGB,
-                      1.055 * np.power(sRGB, 1 / 2.4) - 0.055)
+        mask = sRGB > 0.0031308
+        sRGB[~mask] = sRGB[~mask] * 12.92
+        sRGB[mask] = 1.055 * np.power(sRGB[mask], 1 / 2.4) - 0.055
+        # sRGB = np.where(sRGB <= 0.0031308,
+        #               12.92 * sRGB,
+        #               1.055 * np.power(sRGB, 1 / 2.4) - 0.055)
         sRGB = np.clip(sRGB,0.0,1.0)
         assert sRGB.shape == (N, 3), "sRGB shape should be (N,3)"
         if keep_dim:
@@ -241,6 +244,9 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
     # prepare related data for voxel splatting
     g_opacity = gaussians.get_opacity.detach().cpu().numpy()
+    # # TODO:
+    # g_opacity = np.ones_like(g_opacity)
+
     g_ink = gaussians.get_ink_mix.detach().cpu().numpy()
 
 
@@ -255,12 +261,11 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
 
     # get the idx of the gaussians that have opacity larger than 0.0367
-    # mask = g_opacity.reshape(-1) > 0.1
-    # test_idx = np.argwhere(mask).reshape(-1)
-    
+    mask = g_opacity.reshape(-1) > 0.3
+    test_idx = np.argwhere(mask).reshape(-1)
 
-    # for g_idx in tqdm(test_idx):
-    for g_idx in tqdm(range(g_pos.shape[0])):
+    for g_idx in tqdm(test_idx):
+    # for g_idx in tqdm(range(g_pos.shape[0])):
     
 
         #  Method 1: inside aabb
@@ -369,13 +374,42 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # np.save(os.path.join(model_path,"voxel_ink_post.npy"), voxel_ink)
 
 
+    # visualize the center x y z slice of voxel
+    center_x, center_y, center_z = H // 2, W // 2, D // 2
+    slice_x = voxel_ink[center_x,:,:,:]
+    slice_y = voxel_ink[:,center_y,:,:]
+    slice_z = voxel_ink[:,:,center_z,:]
 
+    # we set the place where has 100% opacity to white, other places to black
+    slice_x_ = np.where(slice_x[:,:,-1] == 1.0, 1.0, 0.0)
+    slice_y_ = np.where(slice_y[:,:,-1] == 1.0, 1.0, 0.0)
+    slice_z_ = np.where(slice_z[:,:,-1] == 1.0, 1.0, 0.0)
+
+    # save the slices as png
+    plt.imsave(os.path.join(model_path,"result_imgs/slice_x.png"), slice_x_, cmap='gray')
+    plt.imsave(os.path.join(model_path,"result_imgs/slice_y.png"), slice_y_, cmap='gray')
+    plt.imsave(os.path.join(model_path,"result_imgs/slice_z.png"), slice_z_, cmap='gray')
+
+
+
+    # we set the value to the percentatge of transparent ink (the last channel of ink mixture)
+    #  it should be computed as the the transparent ink divided by the sum of the ink mixture
+    slice_x_ = slice_x[:,:,-1] / slice_x.sum(axis=2)
+    slice_y_ = slice_y[:,:,-1] / slice_y.sum(axis=2)
+    slice_z_ = slice_z[:,:,-1] / slice_z.sum(axis=2)
+
+    # save the slices as png
+    plt.imsave(os.path.join(model_path,"result_imgs/percent_slice_x.png"), slice_x_, cmap='viridis')
+    plt.imsave(os.path.join(model_path,"result_imgs/percent_slice_y.png"), slice_y_, cmap='viridis')
+    plt.imsave(os.path.join(model_path,"result_imgs/percent_slice_z.png"), slice_z_, cmap='viridis')
+    
+    # assert False, "stop here"
 
     # visualize the voxel splatting result for debugging
-    debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
-    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting/voxel_splatting_alpha.png")
-    debug_alpha_one = np.ones_like(debug_opacity) - (debug_opacity == 0).astype(int)
-    HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting/voxel_splatting.png")
+    # debug_color = HELPER.mix_2_RGB_wavelength(debug_ink)
+    # HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_opacity.reshape(-1), "voxel_splatting/voxel_splatting_alpha.png")
+    # debug_alpha_one = np.ones_like(debug_opacity) - (debug_opacity == 0).astype(int)
+    # HELPER.debug_plot(grid_center.reshape(-1,3), debug_color, debug_alpha_one.reshape(-1), "voxel_splatting/voxel_splatting.png")
 
     
     # ============= Get the albedo and sigma =============
@@ -447,6 +481,10 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # mi_sigma = mi.VolumeGrid(mi.TensorXf(c_sigma.reshape(D,W,H,3)))
 
 
+    # voxel_size = 0.007
+    # H,W,D = (191, 332, 205)
+    # grid_bbox_center = np.array([ 0.01102721,-0.00694841, 0.28867552])
+
     scene_dict = get_mixing_mitsuba_scene_dict(50, 
                                             grid_bbox_center,
                                             np.array([H,W,D])*voxel_size,
@@ -458,24 +496,24 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     #                                        '3dgs_lego_train/try/color.vol', 
     #                                         '3dgs_lego_train/try/density.vol')
     
-    # camera_dict = get_camera_dict(viewcameras[69])
-    camera_dict = get_camera_dict(viewcameras[0])
+    camera_dict = get_camera_dict(viewcameras[69])
+    # camera_dict = get_camera_dict(viewcameras[0])
 
     # ================Rendering scene================
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=0)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=0)
 
     
     camera_dict = get_camera_dict(viewcameras[73])
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=1)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=1)
 
     camera_dict = get_camera_dict(viewcameras[64])
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 256, view_idx=2)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=2)
 
     
     
@@ -489,7 +527,9 @@ def mitsuba_gaussians(dataset : ModelParams, iteration : int, pipeline : Pipelin
 
         cameras = scene.getTrainCameras()
 
-        voxel_splatting(gaussians, [200,200,200], cameras, dataset.model_path)
+        g_opacity = gaussians.get_opacity.detach().cpu().numpy()
+        HELPER.debug_histogram(g_opacity, os.path.join(dataset.model_path,"mitsuba","render","opacity_histogram_g_blob.png"))
+        voxel_splatting(gaussians,[200,200,200], cameras, dataset.model_path)
 
 
 

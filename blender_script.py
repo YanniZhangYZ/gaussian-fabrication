@@ -149,6 +149,81 @@ def padding_new():
 
 
 
+def thickness_concentration():
+    # import bpy
+
+    # Clear existing objects in Blender
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+
+    # Settings for the checkerboard and paddings
+    rows = 1
+    cols = 4
+    cube_size = 0.01  # Cube edge length in meters (10mm)
+    cube_heights = [0.0005, 0.001, 0.0015, 0.002] # Cube heights in meters (0.5mm, 1mm, 1.5mm, 2mm)
+    # base_thickness = 0.004  # Base layer thickness in meters (4mm)
+    padding = 0.002  # Padding around each cube in meters (2mm)
+    total_cube_size = cube_size + padding  # Total space occupied by a cube including padding
+
+    # Calculate the offset to center the board
+    total_width = cols * cube_size + (cols + 1) * padding
+    total_height = rows * cube_size + (rows + 1) * padding
+    offset_x = total_width / 2
+    offset_y = total_height / 2
+
+    # Number of repetitions
+    num_repeats = 4
+
+    # Calculate the starting x-offset to center the entire set of meshes
+    start_x = -((num_repeats * total_width) / 2) + (total_width / 2)
+
+    # Create initial set and subsequent duplicates
+    for n in range(num_repeats):
+        # Position offset for each duplicate set
+        offset_multiplier = start_x + (total_width * n)
+
+        # # Create the base layer
+        # bpy.ops.mesh.primitive_cube_add(size=1, enter_editmode=False, location=(offset_multiplier, 0, base_thickness / 2))
+        # base = bpy.context.object
+        # base.scale = (total_width, total_height, base_thickness)
+        # base.name = f'base_{n}'
+
+        # Create padding mesh
+        # bpy.ops.mesh.primitive_cube_add(size=1, enter_editmode=False, location=(offset_multiplier, 0, base_thickness + cube_heights[n] / 2))
+        bpy.ops.mesh.primitive_cube_add(size=1, enter_editmode=False, location=(offset_multiplier, 0, cube_heights[n] / 2))
+        
+        padding_mesh = bpy.context.object
+        padding_mesh.scale = (total_width, total_height, cube_heights[n])
+        padding_mesh.name = f"padding_{n}"
+
+        # Create the checkerboard cubes and cut holes in the padding mesh
+        for i in range(rows):
+            for j in range(cols):
+                pos_x = (j * total_cube_size) - offset_x + cube_size / 2 + padding + offset_multiplier
+                pos_y = (i * total_cube_size) - offset_y + cube_size / 2 + padding
+
+                # Create a cube for the checkerboard
+                # bpy.ops.mesh.primitive_cube_add(size=1, enter_editmode=False, location=(pos_x, pos_y, base_thickness + cube_heights[n] / 2))
+                bpy.ops.mesh.primitive_cube_add(size=1, enter_editmode=False, location=(pos_x, pos_y,  cube_heights[n] / 2))
+                
+                cube = bpy.context.object
+                cube.scale = (cube_size, cube_size, 1)  # Set initial Z scale for 1mm height
+
+                # Use boolean modifier to create a hole in the padding mesh
+                mod = padding_mesh.modifiers.new(name=f"Cutout_{i}_{j}_{n}", type='BOOLEAN')
+                mod.operation = 'DIFFERENCE'
+                mod.object = cube
+                bpy.context.view_layer.objects.active = padding_mesh
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+
+                cube.scale = (cube_size, cube_size, cube_heights[n])  # Set initial Z scale for 1mm height
+
+
+    # Update the scene to apply changes
+    bpy.context.view_layer.update()
+
+
+
 def export_STL():
     import os
 
