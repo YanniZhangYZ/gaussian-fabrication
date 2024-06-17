@@ -24,7 +24,6 @@ from train import prepare_output_and_logger
 import matplotlib.pyplot as plt
 from scene.cameras import Camera
 
-from train_torch import ink_to_RGB
 
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
@@ -33,6 +32,119 @@ from mitsuba_utils import get_mixing_mitsuba_scene_dict, render_mitsuba_scene, w
 
 from voxel_splatting import Helper
 import open3d as o3d
+
+
+INK = Ink()
+
+def ink_to_RGB(mix, H, W, scale_z):
+    '''
+    mix: (H*W,6) array of ink mixtures
+    output: (3,H,W) array of RGB values
+    
+    '''
+    # mix: (H*W,6) array of ink mixtures
+    # C, H, W = mix.shape
+    mix =  mix[:,:5]
+
+
+    # preprocess given ink mixtures given the transmittance
+    # K
+    # mix_absorption_RGB = mix[:,:4] @ INK.absorption_RGB[:4]
+    # # S
+    # mix_scattering_RGB = mix[:,:4] @ INK.scattering_RGB[:4]
+    # mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
+    # transmittance = torch.exp(-mix_extinction_RGB * scale_z*6).min(dim=1).values
+    # mix = mix * (1.0 - transmittance[:,None])
+
+    print( mix[256*127 + 127])
+
+
+    residual = 1.0 - mix.sum(dim=1)
+
+    mix[:,4] += residual
+
+    if (mix < 0.0).any():
+        mask = torch.nonzero(mix < 0.0)
+        print(mask)
+        print(mix[mask[0]])
+        # print(temp[mask[0]])
+        assert False, "Negative ink concentration inside ink_to_RGB"
+    
+    # mix: (H*W,6) array of ink mixtures
+    # K
+    mix_K = mix @ INK.absorption_matrix[:5]
+    # mix_K = mix @ INK.absorption_matrix
+    # mix_K = mix @ torch.cat((INK.absorption_matrix[:4], INK.absorption_matrix[5:]), dim=0)
+    # S
+    mix_S = mix @ INK.scattering_matrix[:5] + 1e-8
+    # mix_S = mix @ INK.scattering_matrix + 1e-8
+    # mix_S = mix @ torch.cat((INK.scattering_matrix[:4], INK.scattering_matrix[5:]), dim=0) + 1e-8
+
+
+    #equation 2
+    # NOTE: Here we add 1e-8 just to make sure it is differentiable (sqrt(0) has no grad)
+    R_mix = 1 + mix_K / mix_S - torch.sqrt((mix_K / mix_S)**2 + 2 * mix_K / mix_S + 1e-8)
+
+    if torch.isnan(torch.sqrt( (mix_K / mix_S)**2 + 2 * mix_K / mix_S)).any():
+        temp = (mix_K / mix_S)**2 + 2 * mix_K / mix_S
+        mask = torch.nonzero(torch.isnan(torch.sqrt(temp)))
+        # print(R_mix.shape)
+        print(mask)
+        print(temp[mask[0]])
+        assert False, "sqrt negative value has nan"
+    
+    # # manual linear interpolation, for each element in the row vector of R_mix, we compute the mean between the two values and insert it in between
+    # R_mix = torch.cat([R_mix, (R_mix[:,1:] + R_mix[:,:-1]) / 2], dim=1)
+    R_mix = torch.cat([R_mix, (R_mix[:,1:] + R_mix[:,:-1]) / 2], dim=1)
+    R_mix = torch.cat([R_mix, torch.zeros((R_mix.shape[0], INK.w_num - R_mix.shape[1]), dtype=torch.float, device= 'cuda')], dim=1)
+    assert (R_mix[:,71] == 0.0).all(), "The 71th element should be 0.0"
+
+
+    with torch.no_grad():
+        # equation 3 - 5
+        x_D56 = INK.x_observer * INK.sampled_illuminant_D65 * INK.w_delta
+        # x_D56 /= np.sum(x_D56)
+        y_D56 = INK.y_observer * INK.sampled_illuminant_D65 * INK.w_delta
+        # y_D56 /= np.sum(y_D56)
+        z_D56 = INK.z_observer * INK.sampled_illuminant_D65 * INK.w_delta
+        # z_D56 /= np.sum(z_D56)
+    X = R_mix @ x_D56
+    Y = R_mix @ y_D56
+    Z = R_mix @ z_D56
+
+    X = X / INK.w_num
+    Y = Y / INK.w_num
+    Z = Z / INK.w_num
+
+    XYZ = torch.stack([X,Y,Z],axis=1).T
+
+    # Convert XYZ to sRGB, Equation 7
+    with torch.no_grad():
+        sRGB_matrix = torch.tensor([[3.2406, -1.5372, -0.4986],
+                                [-0.9689, 1.8758, 0.0415],
+                                [0.0557, -0.2040, 1.0570]], device="cuda")
+    sRGB = (sRGB_matrix @ XYZ).T
+
+    # Apply gamma correction to convert linear RGB to sRGB
+    mask = sRGB > 0.0031308
+    sRGB[~mask] = sRGB[~mask] * 12.92
+    sRGB[mask] = 1.055 * torch.pow(sRGB[mask], 1 / 2.4) - 0.055
+    # sRGB = torch.where(sRGB <= 0.0031308,
+    #                 12.92 * sRGB,
+    #                 1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
+
+    sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
+
+    if torch.isnan(sRGB).any():
+        temp = sRGB.clone().detach()
+        mask = torch.nonzero(torch.isnan(temp))
+        # print(R_mix.shape)
+        print(mask)
+        print(temp[mask[0]])
+        assert False, "sRGB has nan"
+
+    return sRGB
+
 
 
 
@@ -49,7 +161,7 @@ def get_one_blob(scale_z,idx):
     opacities =  torch.tensor(np.ones(1), dtype=torch.float32, device="cuda")
 
 
-    mixtures =  np.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
+    mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     new_x =  torch.tensor(mixtures, dtype=torch.float32, device="cuda")
 
 
@@ -105,6 +217,18 @@ def get_one_blob(scale_z,idx):
     )
     assert num_tiles_hit.sum() > 0, "No tiles hit"
 
+
+
+    # preprocess given ink mixtures given the transmittance
+    # K
+    mix_absorption_RGB = new_x[:,:4] @ INK.absorption_RGB[:4]
+    # S
+    mix_scattering_RGB = new_x[:,:4] @ INK.scattering_RGB[:4]
+    mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
+    transmittance = torch.exp(-mix_extinction_RGB * scale_z * 6).mean(dim=1)
+    # new_x = new_x * (1.0 - transmittance[:,None])
+    opacities = opacities * (1.0 - transmittance)
+
     ink_mix, out_alpha = rasterize_gaussians(
             xys,
             depths,
@@ -120,11 +244,16 @@ def get_one_blob(scale_z,idx):
             return_alpha=True
     )
 
+
+
+    
+
+
     final_ink_mix = ink_mix.permute(2, 0, 1)
     C, H, W = final_ink_mix.shape
     final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
 
-    out_img = ink_to_RGB(final_ink_mix, H, W)
+    out_img = ink_to_RGB(final_ink_mix, H, W,scale_z)
 
 
     parent_path = "blob_thickness_test"
@@ -132,17 +261,25 @@ def get_one_blob(scale_z,idx):
     alpha_path = os.path.join(parent_path, "alpha")
     slice_path = os.path.join(parent_path, "slice")
     render_path = os.path.join(parent_path, "render")
+    sum_path = os.path.join(parent_path, "sum")
     if not os.path.exists(parent_path):
         os.makedirs(parent_path)
         os.makedirs(rasterize_path)
         os.makedirs(alpha_path)
         os.makedirs(slice_path)
         os.makedirs(render_path)
+        os.makedirs(sum_path)
     
 
     # only include two decimal points in file name( format: idx_scale_z.png)
     torchvision.utils.save_image(out_img, rasterize_path+f"/{idx}_{scale_z:.2f}.png")
 
+    debug_sum = np.squeeze(ink_mix[:,:,2].detach().cpu().numpy())
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    cax = ax.imshow(debug_sum, cmap='viridis') 
+    fig.colorbar(cax)
+    fig.savefig(os.path.join(sum_path, f"sum_{idx}.png"))
 
     debug_alpha = np.squeeze(out_alpha.detach().cpu().numpy())
     fig = plt.figure()
@@ -388,7 +525,7 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
     # # TODO:
     # g_opacity = np.ones_like(g_opacity)
 
-    mixtures =  np.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
+    mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     g_ink = mixtures
 
 
@@ -674,22 +811,22 @@ def merge_images(image_folder, output_image, image_size, grid_size):
 
 
 if __name__ == "__main__":
-    # scales_z = np.linspace(0.001, 0.1, 20)
-    # scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
-    # for idx, scale_z in enumerate(scales_z):
-    #     viewpoint_camera = get_one_blob(scale_z,idx)
+    scales_z = np.linspace(0.001, 0.1, 20)
+    scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
+    for idx, scale_z in enumerate(scales_z):
+        viewpoint_camera = get_one_blob(scale_z,idx)
 
-    #     voxel_splatting([200,200,200], viewpoint_camera, "blob_thickness_test", scale_z, idx)
+        voxel_splatting([200,200,200], viewpoint_camera, "blob_thickness_test", scale_z, idx)
 
-    # mean_scale = 0.0050642
-    # viewpoint_camera = get_one_blob(mean_scale, len(scales_z))
-    # voxel_splatting([200,200,200], viewpoint_camera, "blob_thickness_test", mean_scale, len(scales_z))
+    mean_scale = 0.0050642
+    viewpoint_camera = get_one_blob(mean_scale, len(scales_z))
+    voxel_splatting([200,200,200], viewpoint_camera, "blob_thickness_test", mean_scale, len(scales_z))
 
-    image_folder = "blob_thickness_test/alpha" # Folder containing images
-    output_image = 'blob_thickness_test/alpha_40.jpg'     # Output image file name
-    # image_size = (256, 256)  # Width and height of each image
-    image_size = (640, 480)  # Width and height of each image
-    # image_size = (200, 200)  # Width and height of each image
+    image_folder = "blob_thickness_test/rasterize" # Folder containing images
+    output_image = 'blob_thickness_test/rasterize_40.jpg'     # Output image file name
+    image_size = (256, 256)  # Width and height of each image
+    # image_size = (640, 480)  # Width and height of each image
+    # # image_size = (200, 200)  # Width and height of each image
 
     grid_size = (4, 10)  # Rows, Columns
 

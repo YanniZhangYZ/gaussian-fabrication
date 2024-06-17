@@ -246,19 +246,30 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
+        
+        # # randomly remove 50% of the points
+        # # indices = np.random.choice(xyz.shape[0], int(xyz.shape[0] * 0.2), replace=False)
+        # indices = np.random.choice(xyz.shape[0], int(xyz.shape[0]), replace=False)
+
+
+        # xyz = xyz[indices]
+
         num_pts = xyz.shape[0]
         print("!!!!!!!! The actaul number of points is: ", xyz.shape)
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
         for idx, attr_name in enumerate(scale_names):
+            # scales[:, idx] = np.asarray(plydata.elements[0][attr_name])[indices]
             scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
         rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
         rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
         rots = np.zeros((xyz.shape[0], len(rot_names)))
         for idx, attr_name in enumerate(rot_names):
+            # rots[:, idx] = np.asarray(plydata.elements[0][attr_name])[indices]
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
         
         # We create random points inside the bounds of the synthetic Blender scenes

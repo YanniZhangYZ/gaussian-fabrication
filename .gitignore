@@ -25,4 +25,6 @@ pattern
 center_checker
 measured_spectrum/raw_data
 blob_thickness_test
+blob_thickness_test_yellow
 checker70
+lego/points3d.ply
