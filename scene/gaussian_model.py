@@ -258,7 +258,7 @@ class GaussianModel:
 
         #  NOTE: HERE!!!!!!!!!
         ink_mix = torch.zeros((fused_point_cloud.shape[0], 6), dtype=torch.float, device="cuda")
-        ink_mix = ink_mix + torch.tensor([0.1, 0.1, 0.1, 0.1, 0.6, 0.0], dtype=torch.float, device="cuda")
+        ink_mix = ink_mix + torch.tensor([1e-8, 1e-8, 1e-8, 1e-8, 1 - 4e-8, 0.0], dtype=torch.float, device="cuda")
         
         
 
