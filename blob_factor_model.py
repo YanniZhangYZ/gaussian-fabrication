@@ -97,114 +97,114 @@ if __name__ == "__main__":
     hidden_units = 64   # Number of hidden units, adjust based on complexity
     output_features = 1 # Output is a single scalar
 
-    # # Create the model
-    # model = ExtinctionModel(input_features, hidden_units, output_features).to('cuda')
+    # Create the model
+    model = ExtinctionModel(input_features, hidden_units, output_features).to('cuda')
 
-    # print()
-    # print(model)
-    # print()
+    print()
+    print(model)
+    print()
 
     # Load the data
     mixtures, factors = load_mixtures_factors()
 
-    # print(mixtures.shape)
+    print(mixtures.shape)
 
 
-    # # plot the factors, it has 105 group of data, each group has 50 data points
-    # plt.figure()
-    # x_axis = np.linspace(0.001, 0.05, 50)
-    # for i in range(factors.shape[0]):
-    #     plt.plot(x_axis, factors[i].cpu().numpy())
-    # plt.xlabel('Thickness')
-    # plt.ylabel('Factors')
-    # plt.savefig('blob_factor/factors_gt.png')
+    # plot the factors, it has 105 group of data, each group has 50 data points
+    plt.figure()
+    x_axis = np.linspace(0.001, 0.05, 50)
+    for i in range(factors.shape[0]):
+        plt.plot(x_axis, factors[i].cpu().numpy())
+    plt.xlabel('Thickness')
+    plt.ylabel('Factors')
+    plt.savefig('blob_factor/factors_gt.png')
 
 
 
-    # thickness =  torch.tensor(np.linspace(0.001, 0.05, 50), dtype=torch.float32, device='cuda').unsqueeze(1)/ 0.05
-    # ext_coeff = mixture_to_extinction_rgb(mixtures)
+    thickness =  torch.tensor(np.linspace(0.001, 0.05, 50), dtype=torch.float32, device='cuda').unsqueeze(1)/ 0.05
+    ext_coeff = mixture_to_extinction_rgb(mixtures)
 
-    # # Expand z_scales to match the first dimension of ext_coeff
-    # thickness_ = thickness.repeat(1, ext_coeff.shape[0]).view(-1, 1)  # Reshape to (2000, 1)
-    # # Expand ext_coeff to match the new dimension
-    # ext_coeff_ = ext_coeff.repeat(thickness.shape[0], 1)  # Repeat each row 50 times (2000, 3)
+    # Expand z_scales to match the first dimension of ext_coeff
+    thickness_ = thickness.repeat(1, ext_coeff.shape[0]).view(-1, 1)  # Reshape to (2000, 1)
+    # Expand ext_coeff to match the new dimension
+    ext_coeff_ = ext_coeff.repeat(thickness.shape[0], 1)  # Repeat each row 50 times (2000, 3)
 
 
-    # # Concatenate along the second dimension to form the new input vectors
-    # inputs = torch.cat(( thickness_,ext_coeff_), dim=1)
-    # targets = factors.transpose(0, 1).reshape(-1,1)
+    # Concatenate along the second dimension to form the new input vectors
+    inputs = torch.cat(( thickness_,ext_coeff_), dim=1)
+    targets = factors.transpose(0, 1).reshape(-1,1)
     
-    # # split the data into training and testing
-    # train_size = int(0.8 * inputs.shape[0])
-    # test_size = inputs.shape[0] - train_size
-    # train_inputs_idx = np.random.choice(inputs.shape[0], train_size, replace=False)
-    # test_inputs_idx = np.setdiff1d(np.arange(inputs.shape[0]), train_inputs_idx)
+    # split the data into training and testing
+    train_size = int(0.8 * inputs.shape[0])
+    test_size = inputs.shape[0] - train_size
+    train_inputs_idx = np.random.choice(inputs.shape[0], train_size, replace=False)
+    test_inputs_idx = np.setdiff1d(np.arange(inputs.shape[0]), train_inputs_idx)
 
-    # train_inputs = inputs[train_inputs_idx]
-    # train_targets = targets[train_inputs_idx]
+    train_inputs = inputs[train_inputs_idx]
+    train_targets = targets[train_inputs_idx]
 
-    # test_inputs = inputs[test_inputs_idx]
-    # test_targets = targets[test_inputs_idx]
+    test_inputs = inputs[test_inputs_idx]
+    test_targets = targets[test_inputs_idx]
 
 
-    # # import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
 
-    # # Create an instance of the network
+    # Create an instance of the network
 
-    # # Loss function
-    # criterion = nn.MSELoss()
+    # Loss function
+    criterion = nn.MSELoss()
 
-    # # Optimizer (using Adam here for better performance compared to SGD)
-    # optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    # Optimizer (using Adam here for better performance compared to SGD)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    # # Number of epochs
-    # epochs = int(5e4)
+    # Number of epochs
+    epochs = int(5e4)
 
-    # best_val_loss = np.inf
-    # val_not_improved = 0
+    best_val_loss = np.inf
+    val_not_improved = 0
 
-    # losses = []
-    # val_losses = []
-    # # Training loop
-    # for epoch in range(epochs):
-    #     model.train()  # Set the model to training mode
-    #     optimizer.zero_grad()
-    #     outputs = model(train_inputs)
-    #     loss = criterion(outputs, train_targets)
-    #     loss.backward()
-    #     optimizer.step()
+    losses = []
+    val_losses = []
+    # Training loop
+    for epoch in range(epochs):
+        model.train()  # Set the model to training mode
+        optimizer.zero_grad()
+        outputs = model(train_inputs)
+        loss = criterion(outputs, train_targets)
+        loss.backward()
+        optimizer.step()
 
-    #     # Print statistics
-    #     if epoch % 100 == 0:
-    #         model.eval()  # Set the model to evaluation mode for validation
-    #         with torch.no_grad():
-    #             outputs = model(test_inputs)
-    #             val_loss = criterion(outputs, test_targets).item()
-    #             print(f'Epoch {epoch}, Validation Loss: {val_loss}')
-    #             val_losses.append(val_loss)
-    #             losses.append(loss.item())
+        # Print statistics
+        if epoch % 100 == 0:
+            model.eval()  # Set the model to evaluation mode for validation
+            with torch.no_grad():
+                outputs = model(test_inputs)
+                val_loss = criterion(outputs, test_targets).item()
+                print(f'Epoch {epoch}, Validation Loss: {val_loss}')
+                val_losses.append(val_loss)
+                losses.append(loss.item())
 
-    #             if val_loss < best_val_loss:
-    #                 best_val_loss = val_loss
-    #                 val_not_improved = 0
-    #                 torch.save(model.state_dict(), 'blob_factor/best_model.pth')
-    #             else:
-    #                 val_not_improved += 1
-    #             if val_not_improved > 20:
-    #                 print('Early stopping')
-    #                 break
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    val_not_improved = 0
+                    torch.save(model.state_dict(), 'blob_factor/best_model.pth')
+                else:
+                    val_not_improved += 1
+                if val_not_improved > 20:
+                    print('Early stopping')
+                    break
     
-    # # torch.save(model.state_dict(), 'blob_factor/factor_model.pth')
+    # torch.save(model.state_dict(), 'blob_factor/factor_model.pth')
 
-    # plt.figure()
-    # plt.plot(losses, label='Training Loss')
-    # plt.plot(val_losses, label='Validation Loss')
-    # plt.xlabel('Epoch')
-    # plt.ylabel('Loss')
-    # plt.legend()
-    # # print the final loss and validation loss in the figure
-    # plt.text(0.5, 0.5, f'Final Loss: {losses[-1]:.4f}\nValidation Loss: {val_losses[-1]:.4f}', fontsize=12, ha='center', va='center', transform=plt.gca().transAxes)
-    # plt.savefig('blob_factor/model_loss.png')
+    plt.figure()
+    plt.plot(losses, label='Training Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    # print the final loss and validation loss in the figure
+    plt.text(0.5, 0.5, f'Final Loss: {losses[-1]:.4f}\nValidation Loss: {val_losses[-1]:.4f}', fontsize=12, ha='center', va='center', transform=plt.gca().transAxes)
+    plt.savefig('blob_factor/model_loss.png')
 
     
     model = ExtinctionModel(input_features, hidden_units, output_features).to('cuda')
