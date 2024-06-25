@@ -36,7 +36,7 @@ import open3d as o3d
 
 INK = Ink()
 
-def ink_to_RGB(mix, H, W, scale_z):
+def ink_to_RGB(mix, H, W):
     '''
     mix: (H*W,6) array of ink mixtures
     output: (3,H,W) array of RGB values
@@ -148,9 +148,9 @@ def ink_to_RGB(mix, H, W, scale_z):
 
 
 
-def get_one_blob(scale_z,idx):
+def get_one_blob(mixtures, parent_path, scale_z,idx):
 
-    scale_ = np.ones((1, 3)) * 0.5
+    scale_ = np.ones((1, 3)) / 6.0
     scale_[0,2] = scale_z
     # scale_[:, 2] = np.linspace(0.1, 10, 100)
     scale_ = torch.tensor(scale_, dtype=torch.float32, device="cuda")
@@ -161,7 +161,7 @@ def get_one_blob(scale_z,idx):
     opacities =  torch.tensor(np.ones(1), dtype=torch.float32, device="cuda")
 
 
-    mixtures =  np.array([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]])
+    # mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     new_x =  torch.tensor(mixtures, dtype=torch.float32, device="cuda")
 
 
@@ -171,7 +171,7 @@ def get_one_blob(scale_z,idx):
 
     #  prepare camera that looks to the z-axis
     R_ = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    T_ = np.array([0, 0, 10])
+    T_ = np.array([0, 0, 2])
 
     image_ = torch.ones((3, 800, 800))
     viewpoint_camera = Camera(colmap_id = 0, 
@@ -198,6 +198,7 @@ def get_one_blob(scale_z,idx):
         depths,
         radii,
         conics,
+        cov1d,
         compensation,
         num_tiles_hit,
         cov3d,
@@ -217,15 +218,15 @@ def get_one_blob(scale_z,idx):
     )
     assert num_tiles_hit.sum() > 0, "No tiles hit"
 
-
+    print("================ ", scale_z, " ", torch.sqrt(cov1d- 5e-3).item(), " ================")
 
     # preprocess given ink mixtures given the transmittance
     # K
-    mix_absorption_RGB = new_x[:,:4] @ INK.absorption_RGB[:4]
+    mix_absorption_RGB = new_x[:,:5] @ INK.absorption_RGB[:5]
     # S
-    mix_scattering_RGB = new_x[:,:4] @ INK.scattering_RGB[:4]
+    mix_scattering_RGB = new_x[:,:5] @ INK.scattering_RGB[:5]
     mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
-    transmittance = torch.exp(-mix_extinction_RGB * scale_z * 6).mean(dim=1)
+    transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - 5e-3)[:,None] * 6).mean(dim=1)
     # new_x = new_x * (1.0 - transmittance[:,None])
     opacities = opacities * (1.0 - transmittance)
 
@@ -253,338 +254,70 @@ def get_one_blob(scale_z,idx):
     C, H, W = final_ink_mix.shape
     final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
 
-    out_img = ink_to_RGB(final_ink_mix, H, W,scale_z)
+    out_img = ink_to_RGB(final_ink_mix, H, W)
 
 
-    parent_path = "blob_thickness_test"
     rasterize_path = os.path.join(parent_path, "rasterize")
-    alpha_path = os.path.join(parent_path, "alpha")
-    slice_path = os.path.join(parent_path, "slice")
+    # alpha_path = os.path.join(parent_path, "alpha")
+    # slice_path = os.path.join(parent_path, "slice")
     render_path = os.path.join(parent_path, "render")
-    sum_path = os.path.join(parent_path, "sum")
+    # sum_path = os.path.join(parent_path, "sum")
+    opt_path = os.path.join(parent_path, "opt")
+    loss_path = os.path.join(parent_path, "loss")
+
     if not os.path.exists(parent_path):
         os.makedirs(parent_path)
         os.makedirs(rasterize_path)
-        os.makedirs(alpha_path)
-        os.makedirs(slice_path)
+        # os.makedirs(alpha_path)
+        # os.makedirs(slice_path)
         os.makedirs(render_path)
-        os.makedirs(sum_path)
+        # os.makedirs(sum_path)
+        os.makedirs(opt_path)
+        os.makedirs(loss_path)
     
 
     # only include two decimal points in file name( format: idx_scale_z.png)
     torchvision.utils.save_image(out_img, rasterize_path+f"/{idx}_{scale_z:.2f}.png")
 
-    debug_sum = np.squeeze(ink_mix[:,:,2].detach().cpu().numpy())
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    cax = ax.imshow(debug_sum, cmap='viridis') 
-    fig.colorbar(cax)
-    fig.savefig(os.path.join(sum_path, f"sum_{idx}.png"))
+    # debug_sum = np.squeeze(ink_mix[:,:,2].detach().cpu().numpy())
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111)
+    # cax = ax.imshow(debug_sum, cmap='viridis') 
+    # fig.colorbar(cax)
+    # fig.savefig(os.path.join(sum_path, f"sum_{idx}.png"))
 
-    debug_alpha = np.squeeze(out_alpha.detach().cpu().numpy())
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    cax = ax.imshow(debug_alpha, cmap='viridis') 
-    fig.colorbar(cax)
-    fig.savefig(os.path.join(alpha_path, f"alpha_{idx}.png"))
-
-    return viewpoint_camera
-
-
-def get_3_blob(scale_z,idx):
-
-    scale_ = np.ones((1, 3)) * 0.25
-    scale_[0,2] = scale_z
-    # scale_[:, 2] = np.linspace(0.1, 10, 100)
-    scale_ = torch.tensor([scale_,scale_,scale_], dtype=torch.float32, device="cuda")
-    quat_ = torch.tensor(np.array([[1.0, 0.0, 0.0, 0.0]] * 3), dtype=torch.float32, device="cuda")
-
-    mean3d_ = torch.tensor(np.array([[0.6,0,0],[0,1.0,0],[-0.6,0,0],]), dtype=torch.float32, device="cuda")
-
-    opacities =  torch.tensor(np.array([1.0,1.0,1.0]), dtype=torch.float32, device="cuda")
-
-
-    mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                          [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-                          [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],])
-    new_x =  torch.tensor(mixtures, dtype=torch.float32, device="cuda")
-
-
-    bg_color = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # CMYKWT the backgroud is fully black ink
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
-
-    #  prepare camera that looks to the z-axis
-    R_ = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    T_ = np.array([0, 0, 10])
-
-    image_ = torch.ones((3, 800, 800))
-    viewpoint_camera = Camera(colmap_id = 0, 
-                      R = R_, 
-                      T = T_, 
-                      FoVx = 0.6911112070083618, 
-                      FoVy = 0.6911112070083618, 
-                      image = image_, 
-                      gt_alpha_mask = None,
-                      image_name = "r_0", 
-                      uid = 0)
-
-    B_SIZE = 16
-
-
-    image_height= 256
-    image_width= 256
-    fy = fov2focal(viewpoint_camera.FoVy, image_height)
-    fx = fov2focal(viewpoint_camera.FoVx, image_width)
-
-
-    (
-        xys,
-        depths,
-        radii,
-        conics,
-        compensation,
-        num_tiles_hit,
-        cov3d,
-    ) = project_gaussians(
-        means3d = mean3d_,
-        scales = scale_,
-        glob_scale = 1,
-        quats = quat_,
-        viewmat = viewpoint_camera.world_view_transform.T,
-        fx = fx,
-        fy = fy,
-        cx = image_height/2,
-        cy = image_width/2,
-        img_height = image_height,
-        img_width = image_width,
-        block_width = B_SIZE,
-    )
-    assert num_tiles_hit.sum() > 0, "No tiles hit"
-
-
-
-    # preprocess given ink mixtures given the transmittance
-    # K
-    mix_absorption_RGB = new_x[:,:4] @ INK.absorption_RGB[:4]
-    # S
-    mix_scattering_RGB = new_x[:,:4] @ INK.scattering_RGB[:4]
-    mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
-    transmittance = torch.exp(-mix_extinction_RGB * scale_z * 6).mean(dim=1)
-    # new_x = new_x * (1.0 - transmittance[:,None])
-    opacities = opacities * (1.0 - transmittance)
-
-    ink_mix, out_alpha = rasterize_gaussians(
-            xys,
-            depths,
-            radii,
-            conics,
-            num_tiles_hit,
-            new_x,
-            opacities,
-            image_height,
-            image_width,
-            B_SIZE,
-            background,
-            return_alpha=True
-    )
-
-
-
-    
-
-
-    final_ink_mix = ink_mix.permute(2, 0, 1)
-    C, H, W = final_ink_mix.shape
-    final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
-
-    out_img = ink_to_RGB(final_ink_mix, H, W,scale_z)
-
-
-    parent_path = "blob3_thickness_test"
-    rasterize_path = os.path.join(parent_path, "rasterize")
-    alpha_path = os.path.join(parent_path, "alpha")
-    slice_path = os.path.join(parent_path, "slice")
-    render_path = os.path.join(parent_path, "render")
-    sum_path = os.path.join(parent_path, "sum")
-    if not os.path.exists(parent_path):
-        os.makedirs(parent_path)
-        os.makedirs(rasterize_path)
-        os.makedirs(alpha_path)
-        os.makedirs(slice_path)
-        os.makedirs(render_path)
-        os.makedirs(sum_path)
-    
-
-    # only include two decimal points in file name( format: idx_scale_z.png)
-    torchvision.utils.save_image(out_img, rasterize_path+f"/{idx}_{scale_z:.2f}.png")
-
-    debug_sum = np.squeeze(ink_mix[:,:,2].detach().cpu().numpy())
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    cax = ax.imshow(debug_sum, cmap='viridis') 
-    fig.colorbar(cax)
-    fig.savefig(os.path.join(sum_path, f"sum_{idx}.png"))
-
-    debug_alpha = np.squeeze(out_alpha.detach().cpu().numpy())
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    cax = ax.imshow(debug_alpha, cmap='viridis') 
-    fig.colorbar(cax)
-    fig.savefig(os.path.join(alpha_path, f"alpha_{idx}.png"))
+    # debug_alpha = np.squeeze(out_alpha.detach().cpu().numpy())
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111)
+    # cax = ax.imshow(debug_alpha, cmap='viridis') 
+    # fig.colorbar(cax)
+    # fig.savefig(os.path.join(alpha_path, f"alpha_{idx}.png"))
 
     return viewpoint_camera
 
 
 
-
-
-def get_blobs():
-    
-    # prepare 10 * 10 blobs, these blobs should have the same z value
-    # the x and y values should be in the range of -1 to 1
-    x = np.linspace(-3,3, 10)
-    y = np.linspace(-3,3, 10)
-    z = np.zeros(100)
-
-    xy = np.stack(np.meshgrid(x, y), -1).reshape(-1, 2)
-    xyz = np.concatenate([xy, z.reshape(-1, 1)], axis=1)
-    
-    
-    #  prepare the blobs
-    
-    scale_ = np.ones((100, 3)) * 0.05
-    scale_[0,0] = 0.5
-    # scale_[:, 2] = np.linspace(0.1, 10, 100)
-    scale_ = torch.tensor(scale_, dtype=torch.float32, device="cuda")
-    quat_ = torch.tensor(np.array([[1.0, 0.0, 0.0, 0.0]] * 100), dtype=torch.float32, device="cuda")
-
-    mean3d_ = torch.tensor(xyz, dtype=torch.float32, device="cuda")
-    # mean3d_[:,2] = (scale_[:, 2]**2) / 2.0
-
-
-
-    L = build_scaling_rotation(scale_, quat_)
-    actual_covariance = L @ L.transpose(1, 2)
-
-    print("actual_covariance", actual_covariance[0])
-    print("actual_covariance", actual_covariance[1])
-    print("actual_covariance", actual_covariance[60])
-
-    # assert False
-
-    opacities =  torch.tensor(np.ones(100), dtype=torch.float32, device="cuda")
-
-
-    mixtures =  np.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]] * 100)
-    new_x =  torch.tensor(mixtures, dtype=torch.float32, device="cuda")
-	
-    # new_x = torch.zeros((mixtures.shape[0], 6), device=mixtures.device)
-    # new_x[:, :5] = F.softmax(mixtures[:,:5], dim=-1).clamp(0.0, 1.0)
-
-    # print("new_x", new_x[0])
-
-	
-
-
-
-    bg_color = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # CMYKWT the backgroud is fully black ink
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
-
-    #  prepare camera that looks to the z-axis
-    R_ = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    T_ = np.array([0, 0, 10])
-
-    image_ = torch.ones((3, 800, 800))
-    viewpoint_camera = Camera(colmap_id = 0, 
-                      R = R_, 
-                      T = T_, 
-                      FoVx = 0.6911112070083618, 
-                      FoVy = 0.6911112070083618, 
-                      image = image_, 
-                      gt_alpha_mask = None,
-                      image_name = "r_0", 
-                      uid = 0)
-
-    B_SIZE = 16
-
-
-    image_height=int(viewpoint_camera.image_height)
-    image_width=int(viewpoint_camera.image_width)
-    fy = fov2focal(viewpoint_camera.FoVy, image_height)
-    fx = fov2focal(viewpoint_camera.FoVx, image_width)
-
-
-    (
-        xys,
-        depths,
-        radii,
-        conics,
-        compensation,
-        num_tiles_hit,
-        cov3d,
-    ) = project_gaussians(
-        means3d = mean3d_,
-        scales = scale_,
-        glob_scale = 1,
-        quats = quat_,
-        viewmat = viewpoint_camera.world_view_transform.T,
-        fx = fx,
-        fy = fy,
-        cx = image_height/2,
-        cy = image_width/2,
-        img_height = image_height,
-        img_width = image_width,
-        block_width = B_SIZE,
-    )
-
-    print("num_tiles_hit", num_tiles_hit.sum())
-    assert num_tiles_hit.sum() > 0, "No tiles hit"
-
-    ink_mix, out_alpha = rasterize_gaussians(
-            xys,
-            depths,
-            radii,
-            conics,
-            num_tiles_hit,
-            new_x,
-            opacities,
-            image_height,
-            image_width,
-            B_SIZE,
-            background,
-            return_alpha=True
-    )
-
-    final_ink_mix = ink_mix.permute(2, 0, 1)
-    _, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera, 'lego/train')
-
-
-    torchvision.utils.save_image(out_img, "blob_thickness_test.png")
-
-
-def thickness_factor_optimization(scale_z,idx):
+def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
     # # enable anomaly detection
     # torch.autograd.set_detect_anomaly(True)
 
 
     # set up the blobs
-    scale_ = np.ones((1, 3)) * 0.5
+    scale_ = np.ones((1, 3)) / 6.0
     scale_[0,2] = scale_z
     # scale_[:, 2] = np.linspace(0.1, 10, 100)
     scale_ = torch.tensor(scale_, dtype=torch.float32, device="cuda")
     quat_ = torch.tensor(np.array([[1.0, 0.0, 0.0, 0.0]] * 1), dtype=torch.float32, device="cuda")
     mean3d_ = torch.tensor(np.array([[0,0,0]]), dtype=torch.float32, device="cuda")
     opacities =  torch.tensor(np.ones(1), dtype=torch.float32, device="cuda")
-    mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+    # mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     new_x =  torch.tensor(mixtures, dtype=torch.float32, device="cuda")
     bg_color = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # CMYKWT the backgroud is fully black ink
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     #  prepare camera that looks to the z-axis
     R_ = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    T_ = np.array([0, 0, 10])
+    T_ = np.array([0, 0, 2])
     image_ = torch.ones((3, 800, 800))
     viewpoint_camera = Camera(colmap_id = 0, 
                       R = R_, 
@@ -602,8 +335,9 @@ def thickness_factor_optimization(scale_z,idx):
     fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
     #  GT rendering image
-    print("blob_thickness_test/render/view{0}.png".format(idx))
-    render_img = Image.open("blob_thickness_test/cyan/render/view{0}.png".format(idx))
+    gt_path =  parent_path + "/render/view{0}.png".format(idx)
+    print(gt_path)
+    render_img = Image.open(gt_path)
     assert render_img.size == (256,256) 
     im_data = np.array( render_img.convert("RGBA"))/ 255.0
     render_img = torch.tensor(im_data, dtype=torch.float32, device="cuda").view(256,256, 4)[:,:,:3].permute(2,0,1)
@@ -612,17 +346,12 @@ def thickness_factor_optimization(scale_z,idx):
     factor = torch.tensor([1.0], dtype=torch.float32, requires_grad=True, device="cuda")
     optimizer = torch.optim.Adam([factor], lr=0.01, eps=1e-15) 
     loss_record = []
-    opt_iters = 400
+    opt_iters = 800
 
 
 
-    parent_path = "blob_thickness_factor"
-    rasterize_path = os.path.join(parent_path, "rasterize")
+    opt_path = os.path.join(parent_path, "opt")
     loss_path = os.path.join(parent_path, "loss")
-    if not os.path.exists(parent_path):
-        os.makedirs(parent_path)
-        os.makedirs(rasterize_path)
-        os.makedirs(loss_path)
 
     for i in tqdm(range(opt_iters)):
 
@@ -633,6 +362,7 @@ def thickness_factor_optimization(scale_z,idx):
             depths,
             radii,
             conics,
+            cov1d,
             compensation,
             num_tiles_hit,
             cov3d,
@@ -654,13 +384,13 @@ def thickness_factor_optimization(scale_z,idx):
 
         # preprocess given ink mixtures given the transmittance
         # K
-        mix_absorption_RGB = new_x[:,:4] @ INK.absorption_RGB[:4]
+        mix_absorption_RGB = new_x[:,:5] @ INK.absorption_RGB[:5]
         # S
-        mix_scattering_RGB = new_x[:,:4] @ INK.scattering_RGB[:4]
+        mix_scattering_RGB = new_x[:,:5] @ INK.scattering_RGB[:5]
         mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
 
         # make sure the factor is in the range of 0 to 1
-        transmittance = torch.exp(-mix_extinction_RGB * scale_z * 6 * torch.sigmoid(factor)).mean(dim=1)
+        transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - 5e-3)[:,None] * torch.sigmoid(factor)[:,None] * 6).mean(dim=1)
 
         ink_mix1 = rasterize_gaussians(
                 xys,
@@ -700,9 +430,7 @@ def thickness_factor_optimization(scale_z,idx):
         C, H, W = final_ink_mix.shape
         final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
 
-        out_img = ink_to_RGB(final_ink_mix, H, W, scale_z)
-        if i == 0:
-            torchvision.utils.save_image(out_img, os.path.join(rasterize_path,f"{idx}_init.png"))
+        out_img = ink_to_RGB(final_ink_mix, H, W)
 
         optimizer.zero_grad()
         loss = l1_loss(out_img, render_img)
@@ -715,7 +443,7 @@ def thickness_factor_optimization(scale_z,idx):
     
 
     # only include two decimal points in file name( format: idx_scale_z.png)
-    torchvision.utils.save_image(out_img, os.path.join(rasterize_path,f"{idx}_final.png"))
+    torchvision.utils.save_image(out_img, os.path.join(opt_path,f"{idx}_final.png"))
     plt.figure()
     plt.plot(loss_record)
     plt.savefig(os.path.join(loss_path,f"{idx}.png"))
@@ -726,7 +454,7 @@ def thickness_factor_optimization(scale_z,idx):
 
 
 
-def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
+def voxel_splatting(mixtures, dimensions, viewcamera, model_path, scale_z, name_idx):
     
     
     HELPER = Helper()
@@ -735,20 +463,23 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
     g_pos = np.array([[0.0, 0.0, 0.0]])
     z_len = max((scale_z ** 2) * 6, 2)
     # g_aabb_len = np.array([2,2, z_len])
-    g_aabb_len = np.array([6,6,6])
+    # g_aabb_len = np.array([6,6,6])
 
-    temp_vertex =  np.array([[3,3,3],
-                             [3,3,-3],
-                             [3,-3,3],
-                             [3,-3,-3],
-                             [-3,3,3],
-                             [-3,3,-3],
-                             [-3,-3,3],
-                             [-3,-3,-3]])
+    xy_std = (1 / 6.0) * 3
+
+    temp_vertex =  np.array([[xy_std,xy_std,0.15],
+                             [xy_std,xy_std,-0.15],
+                             [xy_std,-xy_std,0.15],
+                             [xy_std,-xy_std,-0.15],
+                             [-xy_std,xy_std,0.15],
+                             [-xy_std,xy_std,-0.15],
+                             [-xy_std,-xy_std,0.15],
+                             [-xy_std,-xy_std,-0.15]])
     
     g_pcd = o3d.geometry.PointCloud()
     g_pcd.points = o3d.utility.Vector3dVector(temp_vertex)
     g_aabb = g_pcd.get_axis_aligned_bounding_box()
+    g_aabb_len = g_aabb.get_extent()
     g_min = g_aabb.get_min_bound() # NOTE: this is the min bound we use throughout the code
     print(g_min)
 
@@ -763,7 +494,7 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
     # g_aabb_len = g_aabb.get_extent() 
 
     # ============= Choose the voxel size as the minimum of the bounding box dimensions ============= 
-    voxel_size = (np.round(g_aabb_len / np.array(dimensions), 3)).min()
+    voxel_size = 0.006
     H, W, D = np.ceil(g_aabb_len / voxel_size).astype(int)
     # g_min = g_aabb.get_min_bound() # NOTE: this is the min bound we use throughout the code
     print("The dimensions of the voxel grid are: ", H, W, D)
@@ -804,7 +535,7 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
         # [:,3] <- [:,1,1]
         # [:,4] <- [:,1,2]
         # [:,5] <- [:,2,2]
-    scale_ = np.ones((1, 3)) * 0.5
+    scale_ = np.ones((1, 3)) / 6.0
     scale_[0,2] = scale_z
     scale_ = torch.tensor(scale_, dtype=torch.float32, device="cuda")
     quat_ = torch.tensor(np.array([[1.0, 0.0, 0.0, 0.0]] * 1), dtype=torch.float32, device="cuda")
@@ -829,7 +560,7 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
     # # TODO:
     # g_opacity = np.ones_like(g_opacity)
 
-    mixtures =  np.array([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]])
+    # mixtures =  np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     g_ink = mixtures
 
 
@@ -956,20 +687,20 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
 
 
 
-    # visualize the center x y z slice of voxel
-    center_x, center_y, center_z = H // 2, W // 2, D // 2
-    slice_x = voxel_ink[center_x,:,:,:]
-    slice_y = voxel_ink[:,center_y,:,:]
-    slice_z = voxel_ink[:,:,center_z,:]
+    # # visualize the center x y z slice of voxel
+    # center_x, center_y, center_z = H // 2, W // 2, D // 2
+    # slice_x = voxel_ink[center_x,:,:,:]
+    # slice_y = voxel_ink[:,center_y,:,:]
+    # slice_z = voxel_ink[:,:,center_z,:]
 
-    # we set the place where has 100% opacity to white, other places to black
-    slice_x_ = np.where(slice_x[:,:,-1] == 1.0, 1.0, 0.0)
-    slice_y_ = np.where(slice_y[:,:,-1] == 1.0, 1.0, 0.0)
-    slice_z_ = np.where(slice_z[:,:,-1] == 1.0, 1.0, 0.0)
+    # # we set the place where has 100% opacity to white, other places to black
+    # slice_x_ = np.where(slice_x[:,:,-1] == 1.0, 1.0, 0.0)
+    # slice_y_ = np.where(slice_y[:,:,-1] == 1.0, 1.0, 0.0)
+    # slice_z_ = np.where(slice_z[:,:,-1] == 1.0, 1.0, 0.0)
 
-    # save the slices as png
-    plt.imsave(os.path.join(model_path,"slice",f"{name_idx}_x.png"), slice_x_, cmap='gray')
-    plt.imsave(os.path.join(model_path,"slice",f"{name_idx}_z.png"), slice_z_, cmap='gray')
+    # # save the slices as png
+    # plt.imsave(os.path.join(model_path,"slice",f"{name_idx}_x.png"), slice_x_, cmap='gray')
+    # plt.imsave(os.path.join(model_path,"slice",f"{name_idx}_z.png"), slice_z_, cmap='gray')
 
     # np.save(os.path.join(model_path,"voxel_ink_post.npy"), voxel_ink)
 
@@ -1033,28 +764,6 @@ def voxel_splatting(dimensions, viewcamera, model_path, scale_z, name_idx):
 
     # ============= Create a mitsuba scene =============
 
-    # We render from the vol path
-    # NOTE: VERY IMPORTANT!!!!!!! the sigma_t scale factor should be 20!!!!!
-
-    # # For debug
-    # voxel_size = 0.009
-    # H,W,D = (148, 258, 160)
-    # grid_bbox_center = np.array([ 0.00852721, -0.00794841, 0.29117552])
-
-    # voxel_size = 0.007
-    # H,W,D = (191, 332, 205)
-    # grid_bbox_center = np.array([ 0.01102721,-0.00694841, 0.28867552])
-
-    # here we assume the scene is in 5 cm, scale = 5cm / 1mm = 50
-
-    # mi_albedo = mi.VolumeGrid(mi.TensorXf(c_albedo.reshape(D,W,H,3)))
-    # mi_sigma = mi.VolumeGrid(mi.TensorXf(c_sigma.reshape(D,W,H,3)))
-
-
-    # voxel_size = 0.007
-    # H,W,D = (191, 332, 205)
-    # grid_bbox_center = np.array([ 0.01102721,-0.00694841, 0.28867552])
-
     scene_dict = get_mixing_mitsuba_scene_dict(50, 
                                             grid_bbox_center,
                                             np.array([H,W,D])*voxel_size,
@@ -1090,8 +799,6 @@ def merge_images(image_folder, output_image, image_size, grid_size):
         return int(match.group(0)) if match else 0
 
     image_files = sorted([img for img in os.listdir(image_folder) if img.endswith(("png"))], key = extract_number)
-    image_files[0] = image_files[40]
-    image_files = image_files[:40]
     print(image_files)
     images = [Image.open(os.path.join(image_folder, img)).convert('RGB') for img in image_files]
 
@@ -1114,57 +821,240 @@ def merge_images(image_folder, output_image, image_size, grid_size):
     merged_image.save(output_image)
 
 
+
+
 if __name__ == "__main__":
-    # scales_z = np.linspace(0.001, 0.1, 20)
-    # scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
-    # for idx, scale_z in enumerate(scales_z):
-    #     viewpoint_camera = get_one_blob(scale_z,idx)
-
-    #     voxel_splatting([200,200,200], viewpoint_camera, "blob_thickness_test", scale_z, idx)
-
-    # mean_scale = 0.0050642
-    # viewpoint_camera = get_one_blob(mean_scale, len(scales_z))
-    # voxel_splatting([200,200,200], viewpoint_camera, "blob_thickness_test", mean_scale, len(scales_z))
-
-    # image_folder = "blob_thickness_test/render" # Folder containing images
-    # output_image = 'blob_thickness_test/render_40.jpg'     # Output image file name
-    # image_size = (256, 256)  # Width and height of each image
-    # # image_size = (640, 480)  # Width and height of each image
-    # # # image_size = (200, 200)  # Width and height of each image
-
-    # grid_size = (4, 10)  # Rows, Columns
-
-    # merge_images(image_folder, output_image, image_size, grid_size)
 
     # thickness factor optimization
-    scales_z = np.linspace(0.001, 0.1, 20)
-    scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
-    factors = []
-    for idx, scale_z in enumerate(scales_z):
-        f = thickness_factor_optimization(scale_z, idx)
-        factors.append(f.detach().cpu().numpy())
+
+    mixtures = np.array([
+        # line 1
+        [ 25. ,   0. ,   0. ,  50. ,  25.  ,   0. ],
+        [  0. ,  25. ,  25. ,  50. ,   0.  ,   0. ],
+        [  0. ,  25. ,   0. ,  50. ,  25.  ,   0. ],
+        [  0. ,   0. ,  25. ,  50. ,  25.  ,   0. ],
+        [ 25. ,  25. ,   0. ,   0. ,  50.  ,   0. ],
+        [ 25. ,   0. ,  25. ,   0. ,  50.  ,   0. ],
+        [ 25. ,   0. ,   0. ,  25. ,  50.  ,   0. ],
+        [  0. ,  25. ,  25. ,   0. ,  50.  ,   0. ],
+        [  0. ,  25. ,   0. ,  25. ,  50.  ,   0. ],
+        [  0. ,   0. ,  25. ,  25. ,  50.  ,   0. ],
+        # line 2
+        [  0. ,  50. ,  25. ,   0. ,  25.  ,   0.],
+        [  0. ,  50. ,   0. ,  25. ,  25.  ,   0.],
+        [ 25. ,  25. ,  50. ,   0. ,   0.  ,   0.],
+        [ 25. ,   0. ,  50. ,  25. ,   0.  ,   0.],
+        [ 25. ,   0. ,  50. ,   0. ,  25.  ,   0.],
+        [  0. ,  25. ,  50. ,  25. ,   0.  ,   0.],
+        [  0. ,  25. ,  50. ,   0. ,  25.  ,   0.],
+        [  0. ,   0. ,  50. ,  25. ,  25.  ,   0.],
+        [ 25. ,  25. ,   0. ,  50. ,   0.  ,   0.],
+        [ 25. ,   0. ,  25. ,  50. ,   0.  ,   0.],
+        # line 3
+        [ 50. ,  25. ,  25. ,   0. ,   0.  ,   0.],
+        [ 50. ,  25. ,   0. ,  25. ,   0.  ,   0.],
+        [ 50. ,  25. ,   0. ,   0. ,  25.  ,   0.],
+        [ 50. ,   0. ,  25. ,  25. ,   0.  ,   0.],
+        [ 50. ,   0. ,  25. ,   0. ,  25.  ,   0.],
+        [ 50. ,   0. ,   0. ,  25. ,  25.  ,   0.],
+        [ 25. ,  50. ,  25. ,   0. ,   0.  ,   0.],
+        [ 25. ,  50. ,   0. ,  25. ,   0.  ,   0.],
+        [ 25. ,  50. ,   0. ,   0. ,  25.  ,   0.],
+        [  0. ,  50. ,  25. ,  25. ,   0.  ,   0.],
+        # line 4
+        [ 50. ,  50. ,   0. ,   0. ,   0.  ,   0.],
+        [ 50. ,   0. ,  50. ,   0. ,   0.  ,   0.],
+        [ 50. ,   0. ,   0. ,  50. ,   0.  ,   0.],
+        [ 50. ,   0. ,   0. ,   0. ,  50.  ,   0.],
+        [  0. ,  50. ,  50. ,   0. ,   0.  ,   0.],
+        [  0. ,  50. ,   0. ,  50. ,   0.  ,   0.],
+        [  0. ,  50. ,   0. ,   0. ,  50.  ,   0.],
+        [  0. ,   0. ,  50. ,  50. ,   0.  ,   0.],
+        [  0. ,   0. ,  50. ,   0. ,  50.  ,   0.],
+        [  0. ,   0. ,   0. ,  50. ,  50.  ,   0.],
+        # line 5
+        [  0. ,   0. ,  75. ,  25. ,   0.  ,   0.],
+        [  0. ,   0. ,  75. ,   0. ,  25.  ,   0.],
+        [ 25. ,   0. ,   0. ,  75. ,   0.  ,   0.],
+        [  0. ,  25. ,   0. ,  75. ,   0.  ,   0.],
+        [  0. ,   0. ,  25. ,  75. ,   0.  ,   0.],
+        [  0. ,   0. ,   0. ,  75. ,  25.  ,   0.],
+        [ 25. ,   0. ,   0. ,   0. ,  75.  ,   0.],
+        [  0. ,  25. ,   0. ,   0. ,  75.  ,   0.],
+        [  0. ,   0. ,  25. ,   0. ,  75.  ,   0.],
+        [  0. ,   0. ,   0. ,  25. ,  75.  ,   0.],
+        # line 6
+        [ 75. ,  25. ,   0. ,   0. ,   0.  ,   0.],
+        [ 75. ,   0. ,  25. ,   0. ,   0.  ,   0.],
+        [ 75. ,   0. ,   0. ,  25. ,   0.  ,   0.],
+        [ 75. ,   0. ,   0. ,   0. ,  25.  ,   0.],
+        [ 25. ,  75. ,   0. ,   0. ,   0.  ,   0.],
+        [  0. ,  75. ,  25. ,   0. ,   0.  ,   0.],
+        [  0. ,  75. ,   0. ,  25. ,   0.  ,   0.],
+        [  0. ,  75. ,   0. ,   0. ,  25.  ,   0.],
+        [ 25. ,   0. ,  75. ,   0. ,   0.  ,   0.],
+        [  0. ,  25. ,  75. ,   0. ,   0.  ,   0.],
+        # line 7
+        # [100. ,   0. ,   0. ,   0. ,   0.  ,   0.],
+        # [  0. , 100. ,   0. ,   0. ,   0.  ,   0.],
+        # [  0. ,   0. , 100. ,   0. ,   0.  ,   0.],
+        # [  0. ,   0. ,   0. , 100. ,   0.  ,   0.],
+        # [  0. ,   0. ,   0. , 0. ,   100.  ,   0.],
+        [ 25. ,  25. ,  25. ,  25. ,   0.  ,   0.],
+        [ 25. ,  25. ,  25. ,   0. ,  25.  ,   0.],
+        [ 25. ,  25. ,   0. ,  25. ,  25.  ,   0.],
+        [ 25. ,   0. ,  25. ,  25. ,  25.  ,   0.],
+        [  0. ,  25. ,  25. ,  25. ,  25.  ,   0.]])
     
-    mean_scale = 0.0050642
-    f = thickness_factor_optimization(mean_scale, len(scales_z))
-    factors.append(f.detach().cpu().numpy())
 
-    # set a new figure
-    plt.figure()
-    plt.plot(factors)
-    plt.savefig("blob_thickness_factor/factors_cyan.png")
-   
+    # Create a mapping function to convert the values
+    def map_values(x):
+        return x // 25
 
+    # Apply the mapping function
+    mapped_mixtures = map_values(mixtures)
 
-    # # 3 blobs test
-    # scales_z = np.linspace(0.001, 0.1, 20)
-    # scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
-    # for idx, scale_z in enumerate(scales_z):
-    #     viewpoint_camera = get_3_blob(scale_z,idx)
-    #     # voxel_splatting([200,200,200], viewpoint_camera, "blob3_thickness_test", scale_z, idx)
-    # mean_scale = 0.0050642
-    # viewpoint_camera = get_3_blob(mean_scale, len(scales_z))
-    # # voxel_splatting([200,200,200], viewpoint_camera, "blob3_thickness_test", scale_z, idx)
+    # Convert each row to a string
+    string_representation = [''.join(row.astype(int).astype(str)) for row in mapped_mixtures]
+
+    mixtures65 = mixtures / 100.0
 
 
+    idx = sys.argv[1]
+
+    mixtures13 = mixtures65[(int(idx) - 1 )* 13: int(idx)*13]
+    string_representation = string_representation[(int(idx) - 1 )* 13: int(idx)*13]
+
+    
+
+    
+
+
+    for index, line in enumerate(string_representation):
+        # take the parent path as the input from command line
+        parent_path = "blob_factor/" + line
+
+        # # mixture as the input from command line and convert it to float numpy array
+        # print(sys.argv[2], type(sys.argv[2:]) )
+        # if sys.argv[2] == "random":
+        #     mixtures = np.random.rand(1,5)
+        #     mixtures = mixtures / mixtures.sum(axis=1)[:,None]
+        #     mixtures = np.concatenate([mixtures, np.zeros((1,1))], axis=1)
+        #     assert mixtures.sum() == 1.0, "The ink mixture should sum to 1.0"
+        # else:
+        #     mixtures = np.array(sys.argv[2:]).astype(np.float64)
+        #     mixtures = mixtures[None,:]
+        #     assert mixtures.shape[1]==6, "The ink mixture should have 6 channels "+ str(mixtures.shape)
+
+        # mixtures = np.random.rand(1,5)
+        # mixtures = mixtures / mixtures.sum(axis=1)[:,None]
+        # print(mixtures.sum())
+        # mixtures = np.concatenate([mixtures, np.zeros((1,1))], axis=1)
+        
+        mixtures = mixtures13[index]
+        mixtures = mixtures[None,:]
+        print(mixtures.shape)
+        assert abs(mixtures.sum() - 1.0) < 1e-6, "The ink mixture should sum to 1.0, the sum is {}".format(mixtures.sum())
+
+        scales_z = np.linspace(0.001, 0.05, 50)
+        # mixtures =  np.array([[0.0, 1.0, 0.0, 0.0, 0.0, 0.0]])
+        # parent_path = "blob_factor_magenta"
+        factors = []
+        for idx, scale_z in enumerate(scales_z):
+            viewpoint_camera = get_one_blob(mixtures, parent_path, scale_z,idx)
+            voxel_splatting(mixtures, [200,200,200], viewpoint_camera, parent_path, scale_z, idx)
+            f = thickness_factor_optimization(mixtures, parent_path,scale_z, idx)
+            factors.append(f.detach().cpu().numpy())
+
+        np.save(parent_path + "/mixtures.npy", mixtures)
+
+        # set a new figure
+        plt.figure()
+        plt.plot(factors)
+        plt.savefig(parent_path + "/factors.png")
+
+        # save factors as npy
+        np.save(parent_path + "/factors.npy", factors)
+
+        print(" Finish " + parent_path)
+
+
+
+    # # ==================== plot all the factors ====================
+    # cyan_path =  "blob_factor/cyan"
+    # magenta_path =  "blob_factor/magenta"
+    # yellow_path =  "blob_factor/yellow"
+    # black_path =  "blob_factor/black"
+    # rand1_path =  "blob_factor/rand1"
+    # rand2_path =  "blob_factor/rand2"
+    # rand3_path =  "blob_factor/rand3"
+    # rand4_path =  "blob_factor/rand4"
+    # cyan_f = np.load(cyan_path + "/factors.npy")
+    # magenta_f = np.load(magenta_path + "/factors.npy")
+    # yellow_f = np.load(yellow_path + "/factors.npy")
+    # black_f = np.load(black_path + "/factors.npy")
+    # rand1_f = np.load(rand1_path + "/factors.npy")
+    # rand2_f = np.load(rand2_path + "/factors.npy")
+    # rand3_f = np.load(rand3_path + "/factors.npy")
+    # rand4_f = np.load(rand4_path + "/factors.npy")
+
+
+    # x_axis = np.linspace(0.001, 0.05, 50)
+    # plt.figure()
+    # plt.plot(x_axis, cyan_f, label="cyan", color="cyan")
+    # plt.plot(x_axis, magenta_f, label="magenta", color="magenta")
+    # plt.plot(x_axis, yellow_f, label="yellow", color="yellow")
+    # plt.plot(x_axis, black_f, label="black", color="black")
+    # plt.plot(x_axis, rand1_f, label="rand1", color="red")
+    # plt.plot(x_axis, rand2_f, label="rand2", color="blue")
+    # plt.plot(x_axis, rand3_f, label="rand3", color="green")
+    # plt.plot(x_axis, rand4_f, label="rand4", color="orange")
+    # plt.xticks(x_axis, labels=[f"{value:.3f}" for value in x_axis], rotation=45, fontsize=8)
+    # plt.grid(True)
+    # plt.xlabel("Thickness factor")
+    # plt.ylabel("Optimization factor")
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.savefig("blob_factor/factors.png")
+
+
+
+
+    # rand1_mix = np.load(rand1_path + "/mixtures.npy").reshape(-1)
+    # rand2_mix = np.load(rand2_path + "/mixtures.npy").reshape(-1)
+    # rand3_mix = np.load(rand3_path + "/mixtures.npy").reshape(-1)
+    # rand4_mix = np.load(rand4_path + "/mixtures.npy").reshape(-1)
+
+
+    # print(rand1_mix[4] / rand1_mix.sum())
+    # print(rand2_mix[4] / rand2_mix.sum())
+    # print(rand3_mix[4] / rand3_mix.sum())
+    # print(rand4_mix[4] / rand4_mix.sum())
+
+    # print()
+
+    # print(rand1_mix)
+    # print(rand2_mix)
+    # print(rand3_mix)
+    # print(rand4_mix)
+
+    # print()
+
+
+
+    # # ==================== merge all the images ====================
+
+    # image_folder = parent_path + "/render" 
+    # output_image = parent_path + "/render_40.jpg"
+    # merge_images(image_folder, output_image, (256, 256), (5, 10))
+
+    # image_folder = parent_path + "/rasterize" 
+    # output_image = parent_path + "/rasterize_40.jpg"
+    # merge_images(image_folder, output_image, (256, 256), (5, 10))
+
+    # image_folder = parent_path + "/opt"
+    # output_image = parent_path + "/opt_40.jpg"
+    # merge_images(image_folder, output_image, (256, 256), (5, 10))
+  
 
 
