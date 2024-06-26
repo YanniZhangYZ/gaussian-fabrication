@@ -13,8 +13,8 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.graphics_utils import fov2focal, getWorld2View, getWorld2View2
 from ink_intrinsics import Ink
-from gsplat.project_gaussians import project_gaussians
-from gsplat.rasterize import rasterize_gaussians
+from gsplat import project_gaussians
+from gsplat import rasterize_gaussians
 import numpy as np
 from PIL import Image   
 import torch.nn.functional as F
@@ -23,6 +23,7 @@ from utils.loss_utils import l1_loss, ssim
 from train import prepare_output_and_logger
 import matplotlib.pyplot as plt
 from scene.cameras import Camera
+from blob_factor_model import ExtinctionModel
 
 # from mitsuba_conversion import debug_plot_g
 
@@ -221,9 +222,11 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     # mix[4,:,:] = mix[4,:,:] + transparent_blob_mask
 
     C, H, W = mix.shape
-    mix = mix.permute(1,2,0).view(-1,C)
+    mix_alpha =  mix.sum(dim=0)
 
-    current_render = ink_to_RGB(mix, H, W)
+    # mix = mix.permute(1,2,0).view(-1,C)
+
+    current_render = ink_to_RGB(mix.permute(1,2,0).view(-1,C), H, W)
     # current_render = ink_to_albedo(mix, H, W)
 
 
@@ -265,8 +268,24 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     # Ll1 = l1_loss(render_filtered_rgba, gt_original_rgba)
 
     # 3. l1 between render and GT, RGBA loss
-    current_render_rgba = torch.cat([current_render, out_alpha], dim=0)
-    gt_image_rgba = torch.cat([gt_image, gt_original_rgba[3:4,:,:]], dim=0)
+
+    mix_alpha = mix_alpha.view(H, W, 1).permute(2, 0, 1)
+    # for the places where mix_alpha is 0, we want the corresponding render pixel to be white (1,1,1)
+    mask = mix_alpha == 0.0
+    mask = mask.expand_as(current_render)
+
+    current_render[mask] = 1.0
+
+
+    mask_gt = gt_original_rgba[3:4, :, :] == 0.0
+    mask_gt = mask_gt.expand_as(mix)
+    mix_redundent = mix * mask_gt
+    mix_zeros =  torch.zeros_like(mix, device="cuda")
+
+    # current_render_rgba = torch.cat([current_render, mix_alpha], dim=0)
+    current_render_rgba = torch.cat([current_render, out_alpha, mix_redundent], dim=0)
+
+    gt_image_rgba = torch.cat([gt_image, gt_original_rgba[3:4,:,:],mix_zeros], dim=0)
     assert current_render_rgba.shape == gt_image_rgba.shape, (current_render_rgba.shape, gt_image_rgba.shape)
     Ll1 = l1_loss(current_render_rgba, gt_image_rgba)
 
@@ -302,7 +321,7 @@ def loss_ink_mix(mix, out_alpha, viewpoint_cam, gt_images_folder_path):
 
 
 def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_imgs=False):
-    # enable anomaly detection
+    # # enable anomaly detection
     # torch.autograd.set_detect_anomaly(True)
 
     tb_writer = prepare_output_and_logger(dataset)
@@ -330,20 +349,30 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # fy = fov2focal(viewpoint_camera.FoVy, image_height)
     # fx = fov2focal(viewpoint_camera.FoVx, image_width)
 
-    gaussians._xyz.requires_grad = False
-    # gaussians._opacity.requires_grad = False
+    # gaussians._xyz.requires_grad = False
+    gaussians._opacity.requires_grad = False
     # gaussians._scaling.requires_grad = False
     # gaussians._rotation.requires_grad = False
 
     l = [
-        # {'params': [gaussians._xyz], 'lr': lr, "name": "xyz"},
+        {'params': [gaussians._xyz], 'lr': 0.00016, "name": "xyz"},
         {'params': [gaussians._ink_mix], 'lr': lr, "name": "ink"},
-        {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
+        # {'params': [gaussians._opacity], 'lr': lr, "name": "opacity"},
         {'params': [gaussians._scaling], 'lr': lr, "name": "scaling"},
         {'params': [gaussians._rotation], 'lr': lr, "name": "rotation"}
     ]
 
     optimizer = torch.optim.Adam(l, lr=0.01, eps=1e-15) 
+
+    # l = [
+    #     {'params': [gaussians._xyz], 'lr': 0.00016, "name": "xyz"},
+    #     {'params': [gaussians._ink_mix], 'lr': 0.0025, "name": "ink"},
+    #     {'params': [gaussians._opacity], 'lr': 0.05, "name": "opacity"},
+    #     {'params': [gaussians._scaling], 'lr': 0.005, "name": "scaling"},
+    #     {'params': [gaussians._rotation], 'lr': 0.001, "name": "rotation"}
+    # ]
+
+    # optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15) 
     frames = []
     B_SIZE = 16
 
@@ -352,6 +381,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     viewpoint_stack = None
     gt_images_folder_path = os.path.join(dataset.source_path, "train")
     # torch.autograd.set_detect_anomaly(True)
+
+
+    blob_factor_model = ExtinctionModel(4, 64, 1).to('cuda')
+    blob_factor_model.load_state_dict(torch.load('blob_factor/best_model2.pth'))
+    blob_factor_model.eval()
+
+    use_model_count = 0
+
+
 
     for i in range(opt.iterations):
         #TODO
@@ -387,6 +425,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             depths,
             radii,
             conics,
+            cov1d,
             compensation,
             num_tiles_hit,
             cov3d,
@@ -405,6 +444,47 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             block_width = B_SIZE,
         )
 
+        if torch.sqrt(cov1d -  5e-3 + 1e-8).mean() < 0.05 and use_model_count < 20:
+            use_model_count += 1
+ 
+
+        # preprocess given ink mixtures given the transmittance
+        # K
+        mix_absorption_RGB = gaussians.get_ink_mix[:,:5] @ INK.absorption_RGB[:5]
+        # S
+        mix_scattering_RGB = gaussians.get_ink_mix[:,:5] @ INK.scattering_RGB[:5]
+
+        mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
+
+
+        # if use_model_count < 20:
+        #     transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
+        # else:
+        #     blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None], mix_extinction_RGB], dim=1)
+        #     blob_factors = blob_factor_model(blob_model_input)
+        #     transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors* 6).mean(dim=1)
+        
+        if i < 1500:
+            transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
+        else:
+            blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB / 255.0], dim=1)
+            blob_factors = blob_factor_model(blob_model_input)
+            transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors* 6).mean(dim=1)
+        
+        factor =  1.0 - transmittance
+
+
+
+
+
+        # plt.plot(factor.detach().cpu().numpy())
+        # plt.savefig("factor.png")
+
+
+        # debug_z = cov1d.detach().cpu().numpy()
+        # plt.plot(debug_z)
+        # plt.savefig("cov1d.png")
+
         # assert False, print(xys.shape, depths.shape, radii.shape, conics.shape, num_tiles_hit.shape, cov3d.shape)
 
         # NOTE: in the most ideal case, for the place that GT has no color, the rasterize result alpha should be 0
@@ -415,14 +495,14 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 conics,
                 num_tiles_hit,
                 gaussians.get_ink_mix,
-                gaussians.get_opacity,
+                factor[:,None],
                 image_height,
                 image_width,
                 B_SIZE,
                 background,
                 return_alpha=True
             )
-        
+            
         final_ink_mix = ink_mix.permute(2, 0, 1)
         # print("after: ", (final_ink_mix.sum(dim=0) > 1.0 + 1e-2).any())
 
@@ -432,8 +512,72 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         # torchvision.utils.save_image(torch.tensor(out_img), "ink_torch.png")
         
         torch.cuda.synchronize()
-        loss, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera, gt_images_folder_path)
+        loss1, out_img = loss_ink_mix(final_ink_mix, out_alpha, viewpoint_camera, gt_images_folder_path)
+
+
+
         
+        # mean_scales = torch.mean(gaussians.get_scaling, dim=0)
+        # std_scales = torch.std(gaussians.get_scaling, dim=0)
+        # threshold1 = mean_scales + std_scales
+        # # # threshold1 = mean_scales
+
+        # # # threshold2 = mean_scales - 0.5 * std_scales
+
+        # # # # assert False, (std_scales, threshold1, threshold2)
+        # # # # ReLU() is used to implement a soft thresholding mechanism where any scale value below the threshold results in zero penalty. 
+        # # # # The penalty only kicks in for values above the threshold and increases linearly beyond that point.
+        # import torch.nn as nn
+        # relu = nn.ReLU()
+        # scale_loss = relu(gaussians.get_scaling - threshold1).sum()
+        # # # scale_loss += relu(threshold2 - gaussians.get_scaling).sum()
+        # # # scale_loss = relu(mean_scales - gaussians.get_scaling).sum()
+        # # # # scale_loss = relu(gaussians.get_scaling - mean_scales).sum()
+        # # # # scale_loss += relu(mean_scales - gaussians.get_scaling).sum()
+
+
+
+
+
+        # # mean_scale =  gaussians.get_scaling.mean()
+        # # scale_variance = ((gaussians.get_scaling[:,0] - mean_scale).pow(2) + (gaussians.get_scaling[:,1] - mean_scale).pow(2) + (gaussians.get_scaling[:,2] - mean_scale).pow(2)) / 3.0
+        # if i < 1500:
+        #     loss =  loss1
+        # else:
+        #     loss =  loss1 + 0.001 * scale_loss
+
+        import torch.nn as nn
+        relu = nn.ReLU()
+        z_loss= relu(torch.sqrt(cov1d -  5e-3 + 1e-8) - 0.01).sum()
+
+        if i  < 1500:
+            loss =  loss1
+        else:
+            loss =  loss1 + 0.001 * z_loss
+
+
+
+        # max_ext,_ = torch.max(mix_extinction_RGB, dim=1)
+        # loss =  loss1 + 1e-4 * (max_ext * cov1d* 6).mean()
+
+        # #  add regularization term to avoid super sharp blob
+        # mean_scale =  gaussians.get_scaling.mean(dim = 1)
+        # # scale_variance = ((gaussians.get_scaling[:,0] - mean_scale).pow(2) + (gaussians.get_scaling[:,1] - mean_scale).pow(2) + (gaussians.get_scaling[:,2] - mean_scale).pow(2)) / 3.0
+        # scale_variance = ((gaussians.get_scaling[:,0] - mean_scale).abs() + (gaussians.get_scaling[:,1] - mean_scale).abs() + (gaussians.get_scaling[:,2] - mean_scale).abs()) / 3.0
+        
+        # loss  = loss1 +  0.001 * scale_variance.sum()
+        # # loss += 0.1 * scale_variance.mean()
+
+
+        # print(scale_variance.sum())
+
+        # # add regularization term to avoid large dense blob
+        # scale_norm = gaussians.get_scaling.norm(dim=1)
+        # norm_times_exinction = scale_norm * mix_extinction_RGB.mean(dim=1)
+        # loss = loss1 + 0.1 * norm_times_exinction.mean()
+
+        
+        # cov1d.register_hook(print)
 
         # if loss is nan
         #TODO
@@ -461,7 +605,13 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
         torch.cuda.synchronize()
         optimizer.step()
-        print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
+        # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
+        print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()}, z_loss:{0.001 * z_loss}")
+        # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()},ne_mean:{0.1 * norm_times_exinction.mean().item()}")
+        # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()},abs_sum:{ 0.001 * scale_variance.sum().item()}")
+
+        # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()}, z_ext:{1e-4 * (max_ext * cov1d* 6).mean().item()}")
+
 
         # return 0
 
@@ -501,10 +651,32 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             # NOTE: to compare with reading from ply
             print("{}'s ink mix: {}".format(0, gaussians.get_ink_mix[0]))
             print("{}'s ink mix: {}".format(5000, gaussians.get_ink_mix[5000]))
+
+
+
+            #  plot scales xyz in a histogram
+            plt.figure()
+            scale_xyz = gaussians.get_scaling.detach().cpu().numpy()
+            plt.hist(scale_xyz[:,0], bins=100)
+            plt.hist(scale_xyz[:,1], bins=100)
+            plt.hist(scale_xyz[:,2], bins=100)
+            plt.savefig(os.path.join(imgs_path, f"histogram_scales.png"))
+
             pos = gaussians.get_xyz.detach().cpu().numpy()
             debug_color = gaussians.convert_center_ink_2_rgb_4_debug()
             assert debug_color.shape == pos.shape, (debug_color.shape, pos.shape)
-            debug_alpha = gaussians.get_opacity.detach().cpu().numpy()
+            # debug_alpha = gaussians.get_opacity.detach().cpu().numpy()
+
+            with torch.no_grad():
+                blob_model_input = torch.cat([gaussians.get_scaling.detach().mean(axis = 1)[:,None] / 0.05 , mix_extinction_RGB/ 255.0], dim=1)
+                blob_factors = blob_factor_model(blob_model_input)
+            transmittance_ = np.exp(-mix_extinction_RGB.detach().cpu().numpy() * scale_xyz.mean(axis = 1)[:,None]* blob_factors.detach().cpu().numpy() * 6).mean(axis=1)
+            debug_alpha = 1.0 - transmittance_
+            # plot factor in a histogram
+            plt.figure()
+            plt.hist(debug_alpha, bins=100)
+            plt.savefig(os.path.join(imgs_path, f"histogram_opacity_factor.png"))
+
             alpha_ones = np.ones(pos.shape[0])
             debug_plot(pos, debug_color, debug_alpha, os.path.join(imgs_path,"gaussian_init_data_alpha.png"))
             debug_plot(pos, debug_color, alpha_ones, os.path.join(imgs_path,"gaussian_init_data.png"))
@@ -524,6 +696,26 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
 
+            # preprocess given ink mixtures given the transmittance
+            # plot factor in a histogram
+            mix_absorption_RGB = gaussians.get_ink_mix[:,:5] @ INK.absorption_RGB[:5]
+            # S
+            mix_scattering_RGB = gaussians.get_ink_mix[:,:5] @ INK.scattering_RGB[:5]
+
+            mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
+            
+            with torch.no_grad():
+                blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB/255.0], dim=1)
+                blob_factors = blob_factor_model(blob_model_input)
+            transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors * 6).mean(dim=1)
+            # transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - 5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
+            factor =  1.0 - transmittance
+
+            plt.figure()
+            plt.hist(blob_factors.detach().cpu().numpy(), bins=100)
+            plt.savefig(os.path.join(imgs_path,'blob_factor.png'))
+
+
             depth_map = rasterize_gaussians(
                 xys,
                 depths,
@@ -531,7 +723,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 conics,
                 num_tiles_hit,
                 depths[:, None].repeat(1, 6),
-                gaussians.get_opacity,
+                factor[:, None],
                 image_height,
                 image_width,
                 B_SIZE,
@@ -545,6 +737,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             cax = ax.imshow(debug_depth_map, cmap='viridis') 
             fig.colorbar(cax)
             fig.savefig(os.path.join(imgs_path,'depth_map.png'))
+
+
+            ink_sum = np.squeeze(ink_mix.sum(dim=2).detach().cpu().numpy())
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            cax = ax.imshow(ink_sum, cmap='viridis') 
+            fig.colorbar(cax)
+            fig.savefig(os.path.join(imgs_path,'ink_sum.png'))
+
 
 
 
@@ -563,6 +764,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                     depths,
                     radii,
                     conics,
+                    cov1d,
                     compensation,
                     num_tiles_hit,
                     cov3d,
@@ -580,6 +782,26 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                     img_width = image_width,
                     block_width = B_SIZE,
                 )
+
+
+                # plot factor in a histogram
+                mix_absorption_RGB = gaussians.get_ink_mix[:,:5] @ INK.absorption_RGB[:5]
+                # S
+                mix_scattering_RGB = gaussians.get_ink_mix[:,:5] @ INK.scattering_RGB[:5]
+
+                mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
+                with torch.no_grad():
+                    blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB/255.0], dim=1)
+                    blob_factors = blob_factor_model(blob_model_input)
+                transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors * 6).mean(dim=1)
+            
+
+                
+                # transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - 5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
+                factor =  1.0 - transmittance
+
+
+
                 ink_mix, out_alpha = rasterize_gaussians(
                         xys,
                         depths,
@@ -587,7 +809,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                         conics,
                         num_tiles_hit,
                         gaussians.get_ink_mix,
-                        gaussians.get_opacity,
+                        factor[:,None],
                         # opaque_opacity,
                         image_height,
                         image_width,

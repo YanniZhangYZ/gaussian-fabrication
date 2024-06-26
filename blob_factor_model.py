@@ -84,7 +84,7 @@ class ExtinctionModel(nn.Module):
         x = self.activation(x)
         x = self.hidden_layer_2(x)
         x = self.activation_2(x)
-        x = self.output_layer(x)
+        x = torch.sigmoid(self.output_layer(x))
 
         return x
     
@@ -187,7 +187,7 @@ if __name__ == "__main__":
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     val_not_improved = 0
-                    torch.save(model.state_dict(), 'blob_factor/best_model.pth')
+                    torch.save(model.state_dict(), 'blob_factor/best_model2.pth')
                 else:
                     val_not_improved += 1
                 if val_not_improved > 20:
@@ -208,7 +208,7 @@ if __name__ == "__main__":
 
     
     model = ExtinctionModel(input_features, hidden_units, output_features).to('cuda')
-    model.load_state_dict(torch.load('blob_factor/best_model.pth'))
+    model.load_state_dict(torch.load('blob_factor/best_model2.pth'))
     model.eval() 
 
     with torch.no_grad():

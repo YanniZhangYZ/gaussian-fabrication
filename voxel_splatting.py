@@ -243,11 +243,25 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     g_aabb_max = g_pos + 3 * np.sqrt(g_cov_diag)
 
     # prepare related data for voxel splatting
-    g_opacity = gaussians.get_opacity.detach().cpu().numpy()
+    # g_opacity = gaussians.get_opacity.detach().cpu().numpy()
+    # g_opacity = np.ones_like(gaussians.get_opacity.detach().cpu().numpy())
     # # TODO:
     # g_opacity = np.ones_like(g_opacity)
 
     g_ink = gaussians.get_ink_mix.detach().cpu().numpy()
+
+
+    # preprocess given ink mixtures given the transmittance
+    INK = Ink()
+    # K
+    mix_absorption_RGB = gaussians.get_ink_mix[:,:5] @ INK.absorption_RGB[:5]
+    # S
+    mix_scattering_RGB = gaussians.get_ink_mix[:,:5] @ INK.scattering_RGB[:5]
+
+    mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
+    scale_xyz = gaussians.get_scaling.detach().cpu().numpy()
+    transmittance_ = np.exp(-mix_extinction_RGB.detach().cpu().numpy() * scale_xyz.mean(axis = 1)[:,None] * 6).mean(axis=1)
+    g_opacity = 1.0 - transmittance_
 
 
     print("max opacity: ", g_opacity.max())
@@ -264,8 +278,8 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     mask = g_opacity.reshape(-1) > 0.3
     test_idx = np.argwhere(mask).reshape(-1)
 
-    for g_idx in tqdm(test_idx):
-    # for g_idx in tqdm(range(g_pos.shape[0])):
+    # for g_idx in tqdm(test_idx):
+    for g_idx in tqdm(range(g_pos.shape[0])):
     
 
         #  Method 1: inside aabb
@@ -389,6 +403,14 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     plt.imsave(os.path.join(model_path,"result_imgs/slice_x.png"), slice_x_, cmap='gray')
     plt.imsave(os.path.join(model_path,"result_imgs/slice_y.png"), slice_y_, cmap='gray')
     plt.imsave(os.path.join(model_path,"result_imgs/slice_z.png"), slice_z_, cmap='gray')
+
+
+    slice_x_km = HELPER.mix_2_RGB_wavelength(slice_x[:,:,None,:], keep_dim=True)
+    slice_y_km = HELPER.mix_2_RGB_wavelength(slice_y[:,:,None,:], keep_dim=True)
+    slice_z_km = HELPER.mix_2_RGB_wavelength(slice_z[:,:,None,:], keep_dim=True)
+    plt.imsave(os.path.join(model_path,"result_imgs/slice_x_km.png"), slice_x_km.squeeze(2))
+    plt.imsave(os.path.join(model_path,"result_imgs/slice_y_km.png"), slice_y_km.squeeze(2))
+    plt.imsave(os.path.join(model_path,"result_imgs/slice_z_km.png"), slice_z_km.squeeze(2))
 
 
 
