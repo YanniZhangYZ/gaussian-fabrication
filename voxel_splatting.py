@@ -378,6 +378,8 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # if opacity is smaller than 1, add transparent ink
     mask = voxel_opacity < 1.0
     trans_ink = 1.0 - voxel_ink[mask].sum(axis=1)
+    trans_ink[trans_ink < 0] = 0
+    
     assert voxel_ink[mask].sum(axis=1).shape == voxel_opacity[mask].shape, "Ink mixture sum shape should be the same as opacity shape"
     assert (trans_ink >= 0.0).all(), "The added transparent ink should be positive"
     voxel_ink[mask,5] += trans_ink
