@@ -315,7 +315,7 @@ from kornia.color import rgb_to_lab
 import math
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
-def loss_ink_mix(mix, surface_mix, sum_Ta_RGB, out_alpha, viewpoint_cam, gt_images_folder_path):
+def loss_ink_mix(mix, surface_mix, mul_transmittance, out_alpha, viewpoint_cam, gt_images_folder_path):
     
     C, H, W = mix.shape
     # mix = F.relu(mix)
@@ -344,13 +344,13 @@ def loss_ink_mix(mix, surface_mix, sum_Ta_RGB, out_alpha, viewpoint_cam, gt_imag
     # out_img = effective_transmission
     # surface_render = ink_to_RGB(mix.permute(1,2,0).view(-1,C), H, W)
 
-    current_render = ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), (1.0 - sum_Ta_RGB).permute(2,0,1),  H, W)
+    current_render = ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), mul_transmittance.permute(2,0,1),  H, W)
 
     # albedo_spectral =  ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), H, W)
     # current_render = ink_to_albedo(mix.permute(1,2,0).view(-1,C), H, W)
     # surface_render = ink_to_albedo(surface_mix.permute(1,2,0).view(-1,C), H, W)
     # current_render =  ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), H, W)
-    surface_render = ink_to_spectral_albedo(surface_mix.permute(1,2,0).view(-1,C), (1.0 - sum_Ta_RGB).permute(2,0,1), H, W)
+    surface_render = ink_to_spectral_albedo(surface_mix.permute(1,2,0).view(-1,C), mul_transmittance.permute(2,0,1), H, W)
     # surface_render = ink_to_RGB(surface_mix.permute(1,2,0).view(-1,C), H, W)
 
 
@@ -650,7 +650,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         final_surface_mix = surface_mix.permute(2, 0, 1)
 
 
-        ink_mix_R = rasterize_gaussians(
+        ink_mix_R, alpha_R = rasterize_gaussians(
                 xys,
                 depths,
                 radii,
@@ -662,9 +662,10 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 image_width,
                 B_SIZE,
                 background,
+                return_alpha=True
         )
 
-        ink_mix_G = rasterize_gaussians(
+        ink_mix_G, alpha_G = rasterize_gaussians(
                 xys,
                 depths,
                 radii,
@@ -675,10 +676,10 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 image_height,
                 image_width,
                 B_SIZE,
-                background,
+                background,return_alpha=True
         )
 
-        ink_mix_B = rasterize_gaussians(
+        ink_mix_B, alpha_B = rasterize_gaussians(
                 xys,
                 depths,
                 radii,
@@ -690,12 +691,15 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 image_width,
                 B_SIZE,
                 background,
+                return_alpha=True
         )
 
 
         sum_Ta_RGB = torch.stack((ink_mix_R[:,:,0], ink_mix_G[:,:,0], ink_mix_B[:,:,0]), dim=2)
+        mul_transmittance =  1.0 - torch.stack((alpha_R,alpha_G, alpha_B), dim=2)
+
         torch.cuda.synchronize()
-        loss1, out_img = loss_ink_mix(final_ink_mix, final_surface_mix, sum_Ta_RGB, out_alpha, viewpoint_camera, gt_images_folder_path)
+        loss1, out_img = loss_ink_mix(final_ink_mix, final_surface_mix, mul_transmittance, out_alpha, viewpoint_camera, gt_images_folder_path)
 
 
 
