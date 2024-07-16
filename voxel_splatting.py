@@ -539,7 +539,11 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
 
     render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=2)
 
-    
+    camera_dict = get_camera_dict(viewcameras[95])
+    print("Rendering scene")
+
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=3)
+
     
     return 0
 

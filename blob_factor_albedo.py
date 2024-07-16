@@ -166,8 +166,8 @@ def ink_to_albedo(mix, H, W):
         print(temp[mask[0]])
         assert False, "albedo has nan"
 
-    albedo =  mix_S / (mix_K + mix_S + 1e-8)
-    sRGB = torch.clip(albedo,0,1).view(H, W, 3).permute(2,0,1)
+    sRGB =  mix_S / (mix_K + mix_S + 1e-8)
+    sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
     return sRGB
 
 
@@ -282,8 +282,8 @@ def get_one_blob(mixtures, parent_path, scale_z,idx):
 
     final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
 
-    # out_img = ink_to_spectral_albedo(final_ink_mix, H, W)
-    out_img = ink_to_albedo(final_ink_mix, H, W)
+    out_img = ink_to_spectral_albedo(final_ink_mix, H, W)
+    # out_img = ink_to_albedo(final_ink_mix, H, W)
     mask = mask.unsqueeze(0).expand(3, H, W)
     out_img[mask] = 1.0
 
@@ -296,7 +296,7 @@ def get_one_blob(mixtures, parent_path, scale_z,idx):
     opt_path = os.path.join(parent_path, "opt")
     loss_path = os.path.join(parent_path, "loss")
 
-    if not os.path.exists(parent_path):
+    if not os.path.exists(parent_path): 
         os.makedirs(parent_path)
         os.makedirs(rasterize_path)
         os.makedirs(render_path)
@@ -321,13 +321,14 @@ def get_one_blob(mixtures, parent_path, scale_z,idx):
     # fig.colorbar(cax)
     # fig.savefig(os.path.join(alpha_path, f"alpha_{idx}.png"))
 
-    return viewpoint_camera
+    return viewpoint_camera, torch.sqrt(cov1d- blur_margin).item()
+        
 
 
 
 def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
-    # # enable anomaly detection
-    # torch.autograd.set_detect_anomaly(True)
+    # enable anomaly detection
+    torch.autograd.set_detect_anomaly(True)
 
 
     # set up the blobs
@@ -385,13 +386,13 @@ def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
 
         optimizer.zero_grad()
 
-        factor_z = torch.exp(factor)[1]
-        factor_xy = torch.exp(factor)[0]
+        
+        # Ensure the factor is always positive
+        factor_exp = torch.exp(factor)
+        factor_xy = factor_exp[0]
+        factor_z = factor_exp[1]
 
-        #  ensure factor is in the range of 0 to 1
-        scale_factor = torch.tensor([1.0, 0.0, 1.0, 1.0], device='cuda', dtype=torch.float32)
-        scale_factor[0] = factor_xy
-        scale_factor[1] = factor_xy
+
         (
             xys,
             depths,
@@ -425,7 +426,15 @@ def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
         mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
 
         # make sure the factor is in the range of 0 to 1
-        transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - blur_margin)[:,None] * factor_z[:,None] * 6).mean(dim=1)
+        transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - blur_margin)[:,None] * factor_z[:,None]* 6).mean(dim=1)
+        conics_scaled = conics.clone()
+        conics_scaled = conics_scaled.to(factor.device)
+
+        conics_scaled_x = conics_scaled[:, 0] * factor_xy
+        conics_scaled_y = conics_scaled[:, 2] * factor_xy
+        conics_scaled_xy = conics_scaled[:, 1] * factor_xy
+
+        conics_scaled = torch.stack([conics_scaled_x, conics_scaled_xy, conics_scaled_y], dim=1)
 
         
 
@@ -434,7 +443,7 @@ def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
                 xys,
                 depths,
                 radii,
-                conics,
+                conics_scaled,
                 num_tiles_hit,
                 new_x[:,:3],
                 opacities * (1.0 - transmittance),
@@ -449,7 +458,7 @@ def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
                 xys,
                 depths,
                 radii,
-                conics,
+                conics_scaled,
                 num_tiles_hit,
                 new_x[:,3:],
                 opacities * (1.0 - transmittance),
@@ -470,8 +479,8 @@ def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
         mask = final_ink_mix.sum(dim=0) == 0
         assert mask.shape == (H, W), mask.shape
         final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
-        # out_img = ink_to_spectral_albedo(final_ink_mix, H, W)
-        out_img = ink_to_albedo(final_ink_mix, H, W)
+        out_img = ink_to_spectral_albedo(final_ink_mix, H, W)
+        # out_img = ink_to_albedo(final_ink_mix, H, W)
 
         # make the mask the same size as the output image
         mask = mask.unsqueeze(0).expand(3, H, W)
@@ -500,7 +509,7 @@ def thickness_factor_optimization(mixtures, parent_path, scale_z,idx):
     
 
     # return torch.sigmoid(factor)
-    return torch.exp(factor)
+    return factor_exp
 
 
 
@@ -1020,44 +1029,46 @@ if __name__ == "__main__":
 
     idx = int(sys.argv[1])
     # mixtures_batch, string_representation = get_standard_mixtures(idx)
-    # mixtures_batch, string_representation = read_rand_mixtures(idx)
-    mixtures_batch, string_representation = get_pure_cmyk_mixtures()
+    # # mixtures_batch, string_representation = read_rand_mixtures(idx)
+    # # mixtures_batch, string_representation = get_pure_cmyk_mixtures()
 
 
 
-    for index, line in enumerate(string_representation):
-        # take the parent path as the input from command line
-        parent_path = "blob_factor_albedo_rgb/data/" + line
+    # for index, line in enumerate(string_representation):
+    #     # take the parent path as the input from command line
+    #     parent_path = "blob_factor/data/" + line
+
+    #     mixtures = mixtures_batch[index]
+    #     mixtures = mixtures[None,:]
+    #     print(mixtures.shape)
+    #     assert abs(mixtures.sum() - 1.0) < 1e-6, "The ink mixture should sum to 1.0, the sum is {}".format(mixtures.sum())
+
+    #     scales_z = np.linspace(0.001, 0.05, 50)
+    #     factors = []
+
+    #     for idx, scale_z in enumerate(scales_z):
+    #         # viewpoint_camera, _ = get_one_blob(mixtures, parent_path, scale_z,idx)
+    #         # voxel_splatting(mixtures, [200,200,200], viewpoint_camera, parent_path, scale_z, idx)
+    #         f = thickness_factor_optimization(mixtures, parent_path,scale_z, idx)
+    #         factors.append(f.detach().cpu().numpy())
+
+
+
+    #     np.save(parent_path + "/mixtures.npy", mixtures)
+    #     # save factors as npy
+    #     np.save(parent_path + "/factors.npy", factors)
+
+    #     factors = np.array(factors)
+
+    #     plt.figure()
+    #     plt.plot(factors[:,0], label="factors_xy")
+    #     plt.plot(factors[:,1], label="factors_z")
+    #     plt.legend()
+    #     plt.savefig(parent_path + "/factors.png")
+
         
-        mixtures = mixtures_batch[index]
-        mixtures = mixtures[None,:]
-        print(mixtures.shape)
-        assert abs(mixtures.sum() - 1.0) < 1e-6, "The ink mixture should sum to 1.0, the sum is {}".format(mixtures.sum())
 
-        scales_z = np.linspace(0.001, 0.05, 50)
-        factors = []
-        for idx, scale_z in enumerate(scales_z):
-            # viewpoint_camera = get_one_blob(mixtures, parent_path, scale_z,idx)
-            # voxel_splatting(mixtures, [200,200,200], viewpoint_camera, parent_path, scale_z, idx)
-            f = thickness_factor_optimization(mixtures, parent_path,scale_z, idx)
-            factors.append(f.detach().cpu().numpy())
-
-        np.save(parent_path + "/mixtures.npy", mixtures)
-        # save factors as npy
-        np.save(parent_path + "/factors.npy", factors)
-
-        factors = np.array(factors)
-
-        # set a new figure
-        plt.figure()
-        plt.plot(factors[:,1], label="factors")
-        plt.plot(factors[:,0], label="factors_xy")
-        plt.legend()
-        plt.savefig(parent_path + "/factors.png")
-
-        
-
-        print(" Finish " + parent_path)
+    #     print(" Finish " + parent_path)
 
 
 
@@ -1124,18 +1135,23 @@ if __name__ == "__main__":
 
 
     # # ==================== merge all the images ====================
+    parent_path = "blob_factor/data/"
+    subfolders = [f for f in os.listdir(parent_path) if os.path.isdir(os.path.join(parent_path, f))]
 
-    # image_folder = parent_path + "/render" 
-    # output_image = parent_path + "/render_40.jpg"
-    # merge_images(image_folder, output_image, (256, 256), (5, 10))
 
-    # image_folder = parent_path + "/rasterize" 
-    # output_image = parent_path + "/rasterize_40.jpg"
-    # merge_images(image_folder, output_image, (256, 256), (5, 10))
 
-    # image_folder = parent_path + "/opt"
-    # output_image = parent_path + "/opt_40.jpg"
-    # merge_images(image_folder, output_image, (256, 256), (5, 10))
+    for subfolder in subfolders:
+        image_folder = parent_path + subfolder +"/render" 
+        output_image = parent_path + subfolder + "/render_40.jpg"
+        merge_images(image_folder, output_image, (256, 256), (5, 10))
+
+        image_folder = parent_path + subfolder + "/rasterize" 
+        output_image = parent_path + subfolder + "/rasterize_40.jpg"
+        merge_images(image_folder, output_image, (256, 256), (5, 10))
+
+        image_folder = parent_path + subfolder + "/opt"
+        output_image = parent_path + subfolder + "/opt_40.jpg"
+        merge_images(image_folder, output_image, (256, 256), (5, 10))
   
 
 

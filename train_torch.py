@@ -165,7 +165,7 @@ def ink_to_RGB(mix, effective_trans, H, W):
     return sRGB
 
 
-def ink_to_spectral_albedo(mix, effective_trans, H, W):
+def ink_to_spectral_albedo(mix, H, W):
     '''
     mix: (H*W,6) array of ink mixtures
     output: (3,H,W) array of RGB values
@@ -250,7 +250,7 @@ def ink_to_spectral_albedo(mix, effective_trans, H, W):
     #                 1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
 
     # sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
-    sRGB = sRGB.view(H, W, 3).permute(2,0,1) + effective_trans * D56_light_intensity.view(3,1,1)
+    sRGB = sRGB.view(H, W, 3).permute(2,0,1)
     sRGB = torch.clip(sRGB,0,1)
 
     if torch.isnan(sRGB).any():
@@ -315,7 +315,7 @@ from kornia.color import rgb_to_lab
 import math
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
-def loss_ink_mix(mix, surface_mix, mul_transmittance, out_alpha, viewpoint_cam, gt_images_folder_path):
+def loss_ink_mix(mix, surface_mix, out_alpha, viewpoint_cam, gt_images_folder_path):
     
     C, H, W = mix.shape
     # mix = F.relu(mix)
@@ -344,13 +344,13 @@ def loss_ink_mix(mix, surface_mix, mul_transmittance, out_alpha, viewpoint_cam, 
     # out_img = effective_transmission
     # surface_render = ink_to_RGB(mix.permute(1,2,0).view(-1,C), H, W)
 
-    current_render = ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), mul_transmittance.permute(2,0,1),  H, W)
+    # current_render = ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), mul_transmittance.permute(2,0,1),  H, W)
 
     # albedo_spectral =  ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), H, W)
     # current_render = ink_to_albedo(mix.permute(1,2,0).view(-1,C), H, W)
     # surface_render = ink_to_albedo(surface_mix.permute(1,2,0).view(-1,C), H, W)
-    # current_render =  ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), H, W)
-    surface_render = ink_to_spectral_albedo(surface_mix.permute(1,2,0).view(-1,C), mul_transmittance.permute(2,0,1), H, W)
+    current_render =  ink_to_spectral_albedo(mix.permute(1,2,0).view(-1,C), H, W)
+    surface_render = ink_to_spectral_albedo(surface_mix.permute(1,2,0).view(-1,C), H, W)
     # surface_render = ink_to_RGB(surface_mix.permute(1,2,0).view(-1,C), H, W)
 
 
@@ -463,7 +463,7 @@ def loss_ink_mix(mix, surface_mix, mul_transmittance, out_alpha, viewpoint_cam, 
     # return 0.2* loss_ssim + 0.7 * loss_mse + 0.1 * loss_delta_e76, current_render
 
 
-    return loss, current_render
+    return loss, current_render, surface_render
 
      
 
@@ -531,9 +531,9 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
     # torch.autograd.set_detect_anomaly(True)
 
 
-    # blob_factor_model = ExtinctionModel(4, 64, 1).to('cuda')
-    # blob_factor_model.load_state_dict(torch.load('blob_factor/best_model2.pth'))
-    # blob_factor_model.eval()
+    blob_factor_model = ExtinctionModel(4, 64, 2).to('cuda')
+    blob_factor_model.load_state_dict(torch.load('blob_factor_albedo_spec_new/best_model.pth'))
+    blob_factor_model.eval()
 
 
 
@@ -571,7 +571,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             xys,
             depths,
             radii,
-            conics,
+            conics_,
             cov1d,
             compensation,
             num_tiles_hit,
@@ -590,7 +590,6 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
             img_width = image_width,
             block_width = B_SIZE,
         )
-
         # preprocess given ink mixtures given the transmittance
         # K
         mix_absorption_RGB = gaussians.get_ink_mix[:,:5] @ INK.absorption_RGB[:5]
@@ -600,14 +599,25 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
 
 
-        # if i < 1500:
-        #     transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
-        # else:
-        #     blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB / 255.0], dim=1)
-        #     blob_factors = blob_factor_model(blob_model_input)
-        #     transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors* 6).mean(dim=1)
+        if i < 1500:
+            transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
+            conics = conics_.clone()
+
+        else:
+            blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB / 255.0], dim=1)
+            blob_factors = blob_factor_model(blob_model_input) * torch.tensor([20.0, 200.0], dtype=torch.float32, device='cuda')
+            transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors[:,1][:,None] *6).mean(dim=1)
+
+            conics = conics_.clone()
+            conics = conics.to(conics_.device)
+
+            conics_x = conics[:, 0] * blob_factors[:,0]
+            conics_y = conics[:, 2] * blob_factors[:,0]
+            conics_xy = conics[:, 1] * blob_factors[:,0]
+
+            conics = torch.stack([conics_x, conics_xy, conics_y], dim=1)
         
-        transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * 6)
+        # transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * 6)
         
         factor =  1.0 - transmittance
 
@@ -619,7 +629,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 conics,
                 num_tiles_hit,
                 gaussians.get_ink_mix,
-                factor.mean(dim=1)[:,None],
+                factor[:,None],
                 # torch.ones_like(factor[:,None]),
                 image_height,
                 image_width,
@@ -639,7 +649,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 conics,
                 num_tiles_hit,
                 gaussians.get_ink_mix,
-                torch.ones_like(factor.mean(dim=1)[:,None]),
+                torch.ones_like(factor[:,None]),
                 image_height,
                 image_width,
                 B_SIZE,
@@ -650,56 +660,56 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         final_surface_mix = surface_mix.permute(2, 0, 1)
 
 
-        ink_mix_R, alpha_R = rasterize_gaussians(
-                xys,
-                depths,
-                radii,
-                conics,
-                num_tiles_hit,
-                torch.ones_like(gaussians.get_ink_mix),
-                factor[:,0][:,None],
-                image_height,
-                image_width,
-                B_SIZE,
-                background,
-                return_alpha=True
-        )
+        # ink_mix_R, alpha_R = rasterize_gaussians(
+        #         xys,
+        #         depths,
+        #         radii,
+        #         conics,
+        #         num_tiles_hit,
+        #         torch.ones_like(gaussians.get_ink_mix),
+        #         factor[:,0][:,None],
+        #         image_height,
+        #         image_width,
+        #         B_SIZE,
+        #         background,
+        #         return_alpha=True
+        # )
 
-        ink_mix_G, alpha_G = rasterize_gaussians(
-                xys,
-                depths,
-                radii,
-                conics,
-                num_tiles_hit,
-                torch.ones_like(gaussians.get_ink_mix),
-                factor[:,1][:,None],
-                image_height,
-                image_width,
-                B_SIZE,
-                background,return_alpha=True
-        )
+        # ink_mix_G, alpha_G = rasterize_gaussians(
+        #         xys,
+        #         depths,
+        #         radii,
+        #         conics,
+        #         num_tiles_hit,
+        #         torch.ones_like(gaussians.get_ink_mix),
+        #         factor[:,1][:,None],
+        #         image_height,
+        #         image_width,
+        #         B_SIZE,
+        #         background,return_alpha=True
+        # )
 
-        ink_mix_B, alpha_B = rasterize_gaussians(
-                xys,
-                depths,
-                radii,
-                conics,
-                num_tiles_hit,
-                torch.ones_like(gaussians.get_ink_mix),
-                factor[:,2][:,None],
-                image_height,
-                image_width,
-                B_SIZE,
-                background,
-                return_alpha=True
-        )
+        # ink_mix_B, alpha_B = rasterize_gaussians(
+        #         xys,
+        #         depths,
+        #         radii,
+        #         conics,
+        #         num_tiles_hit,
+        #         torch.ones_like(gaussians.get_ink_mix),
+        #         factor[:,2][:,None],
+        #         image_height,
+        #         image_width,
+        #         B_SIZE,
+        #         background,
+        #         return_alpha=True
+        # )
 
 
-        sum_Ta_RGB = torch.stack((ink_mix_R[:,:,0], ink_mix_G[:,:,0], ink_mix_B[:,:,0]), dim=2)
-        mul_transmittance =  1.0 - torch.stack((alpha_R,alpha_G, alpha_B), dim=2)
+        # sum_Ta_RGB = torch.stack((ink_mix_R[:,:,0], ink_mix_G[:,:,0], ink_mix_B[:,:,0]), dim=2)
+        # mul_transmittance =  1.0 - torch.stack((alpha_R,alpha_G, alpha_B), dim=2)
 
         torch.cuda.synchronize()
-        loss1, out_img = loss_ink_mix(final_ink_mix, final_surface_mix, mul_transmittance, out_alpha, viewpoint_camera, gt_images_folder_path)
+        loss1, out_img, surface_render = loss_ink_mix(final_ink_mix, final_surface_mix, out_alpha, viewpoint_camera, gt_images_folder_path)
 
 
 
@@ -733,6 +743,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 print("opacity: ", factor[i_])
             print("=============================================================================")
             torchvision.utils.save_image(out_img, "{}_render.png".format(i))
+            torchvision.utils.save_image(surface_render, "{}_surf.png".format(i))
 
 
 
@@ -747,12 +758,19 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
         import torch.nn as nn
         relu = nn.ReLU()
-        z_loss= relu(torch.sqrt(cov1d -  5e-3 + 1e-8) - 0.01).sum()
+        z_loss= relu(torch.sqrt(cov1d -  5e-3 + 1e-8) - 0.01).sum() + relu(0.0025 - torch.sqrt(cov1d -  5e-3 + 1e-8)).sum()
+        # z_loss= relu(torch.sqrt(cov1d -  5e-3 + 1e-8) - 0.01).sum()
 
-        if i  < 5000:
-            loss =  loss1
-        else:
-            loss =  loss1 + 0.001 * z_loss
+
+
+
+        # if i  < 1500:
+        #     loss =  loss1
+        # else:
+        #     loss =  loss1 + 0.001 * z_loss
+
+        loss =  loss1 + 0.01 * z_loss
+
 
 
 
@@ -943,7 +961,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                     xys,
                     depths,
                     radii,
-                    conics,
+                    conics_,
                     cov1d,
                     compensation,
                     num_tiles_hit,
@@ -970,15 +988,23 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 mix_scattering_RGB = gaussians.get_ink_mix[:,:5] @ INK.scattering_RGB[:5]
 
                 mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
-                # with torch.no_grad():
-                #     blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB/255.0], dim=1)
-                #     blob_factors = blob_factor_model(blob_model_input)
+                with torch.no_grad():
+                    blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB/255.0], dim=1)
+                    blob_factors = blob_factor_model(blob_model_input) * torch.tensor([20.0, 200.0], dtype=torch.float32, device='cuda')
                 # transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors * 6).mean(dim=1)
             
 
                 
-                transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - 5e-3 + 1e-8)[:,None] * 6).mean(dim=1)
+                transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d - 5e-3 + 1e-8)[:,None] * blob_factors[:,1][:,None] * 6).mean(dim=1)
                 factor =  1.0 - transmittance
+                conics = conics_.clone()
+                conics = conics.to(conics_.device)
+
+                conics_x = conics[:, 0] * blob_factors[:,0]
+                conics_y = conics[:, 2] * blob_factors[:,0]
+                conics_xy = conics[:, 1] * blob_factors[:,0]
+
+                conics = torch.stack([conics_x, conics_xy, conics_y], dim=1)
 
 
 

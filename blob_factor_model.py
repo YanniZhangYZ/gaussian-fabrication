@@ -18,10 +18,18 @@ def load_mixtures_factors():
     yellow_mixture = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
     black_mixture = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
 
-    cyan_factor = np.load('blob_factor/data/cyan/factors.npy').reshape(-1).tolist()
-    magenta_factor = np.load('blob_factor/data/magenta/factors.npy').reshape(-1).tolist()
-    yellow_factor = np.load('blob_factor/data/yellow/factors.npy').reshape(-1).tolist()
-    black_factor = np.load('blob_factor/data/black/factors.npy').reshape(-1).tolist()
+
+
+    # cyan_factor = np.load('blob_factor/data/cyan/factors.npy').reshape(-1).tolist()
+    # magenta_factor = np.load('blob_factor/data/magenta/factors.npy').reshape(-1).tolist()
+    # yellow_factor = np.load('blob_factor/data/yellow/factors.npy').reshape(-1).tolist()
+    # black_factor = np.load('blob_factor/data/black/factors.npy').reshape(-1).tolist()
+
+
+    cyan_factor = np.load('blob_factor/data/cyan/factors.npy').squeeze().tolist()
+    magenta_factor = np.load('blob_factor/data/magenta/factors.npy').squeeze().tolist()
+    yellow_factor = np.load('blob_factor/data/yellow/factors.npy').squeeze().tolist()
+    black_factor = np.load('blob_factor/data/black/factors.npy').squeeze().tolist()
 
 
     mixtures = [cyan_mixture, magenta_mixture, yellow_mixture, black_mixture]
@@ -31,7 +39,8 @@ def load_mixtures_factors():
             continue
         # get all the files in the subfolder
         path = os.path.join('blob_factor/data', f)
-        factor = np.load(path + "/factors.npy").reshape(-1).tolist()
+        # factor = np.load(path + "/factors.npy").reshape(-1).tolist()
+        factor = np.load(path + "/factors.npy").squeeze().tolist()
         mix = np.load(path + "/mixtures.npy").reshape(-1).tolist()
         mixtures.append(mix)
         factors.append(factor)
@@ -84,7 +93,9 @@ class ExtinctionModel(nn.Module):
         x = self.activation(x)
         x = self.hidden_layer_2(x)
         x = self.activation_2(x)
-        x = torch.sigmoid(self.output_layer(x))
+        # x = torch.sigmoid(self.output_layer(x))
+        x = torch.exp(self.output_layer(x))
+
 
         return x
     
@@ -93,9 +104,9 @@ class ExtinctionModel(nn.Module):
 
 if __name__ == "__main__":
     # Parameters
-    input_features = 4  # One scalar and three for the RGB vector
+    input_features = 4  # cov1d,  and three for the RGB vector
     hidden_units = 64   # Number of hidden units, adjust based on complexity
-    output_features = 1 # Output is a single scalar
+    output_features = 2 # Output is a single scalar
 
     # Create the model
     model = ExtinctionModel(input_features, hidden_units, output_features).to('cuda')
@@ -107,32 +118,47 @@ if __name__ == "__main__":
     # Load the data
     mixtures, factors = load_mixtures_factors()
 
-    print(mixtures.shape)
 
+    dataset_size = mixtures.shape[0]
+    print(f"Dataset size: {dataset_size}")
 
     # plot the factors, it has 105 group of data, each group has 50 data points
     plt.figure()
     x_axis = np.linspace(0.001, 0.05, 50)
     for i in range(factors.shape[0]):
-        plt.plot(x_axis, factors[i].cpu().numpy())
+        plt.plot(x_axis, factors[i,:, 1].cpu().numpy())
     plt.xlabel('Thickness')
     plt.ylabel('Factors')
-    plt.savefig('blob_factor/factors_gt.png')
+    plt.savefig('blob_factor/factors_z_gt.png')
 
+    plt.figure()
+    x_axis = np.linspace(0.001, 0.05, 50)
+    for i in range(factors.shape[0]):
+        plt.plot(x_axis, factors[i,:, 0].cpu().numpy())
+    plt.xlabel('Thickness')
+    plt.ylabel('Factors')
+    plt.savefig('blob_factor/factors_xy_gt.png')
 
 
     thickness =  torch.tensor(np.linspace(0.001, 0.05, 50), dtype=torch.float32, device='cuda').unsqueeze(1)/ 0.05
     ext_coeff = mixture_to_extinction_rgb(mixtures)
 
-    # Expand z_scales to match the first dimension of ext_coeff
-    thickness_ = thickness.repeat(1, ext_coeff.shape[0]).view(-1, 1)  # Reshape to (2000, 1)
-    # Expand ext_coeff to match the new dimension
-    ext_coeff_ = ext_coeff.repeat(thickness.shape[0], 1)  # Repeat each row 50 times (2000, 3)
+
+    thickness_ = thickness.repeat(ext_coeff.shape[0], 1)
+    ext_coeff_ = ext_coeff.repeat_interleave(thickness.shape[0], dim=0)
+    inputs = torch.cat((thickness_.flatten().unsqueeze(1), ext_coeff_), dim=1)
+    targets = factors.reshape(-1,2) / torch.tensor([20.0, 200.0], dtype=torch.float32, device='cuda')
+    # targets = factors.reshape(-1,2) / torch.tensor([20.0, 60.0], dtype=torch.float32, device='cuda')
 
 
-    # Concatenate along the second dimension to form the new input vectors
-    inputs = torch.cat(( thickness_,ext_coeff_), dim=1)
-    targets = factors.transpose(0, 1).reshape(-1,1)
+
+    # # Expand z_scales to match the first dimension of ext_coeff
+    # thickness_ = thickness.repeat(1, ext_coeff.shape[0]).view(-1, 1)
+    # # Expand ext_coeff to match the new dimension
+    # ext_coeff_ = ext_coeff.repeat(thickness.shape[0], 1)
+    # # Concatenate along the second dimension to form the new input vectors
+    # inputs = torch.cat(( thickness_,ext_coeff_), dim=1)
+    # targets = factors.transpose(0, 1).reshape(-1,1)
     
     # split the data into training and testing
     train_size = int(0.8 * inputs.shape[0])
@@ -187,12 +213,12 @@ if __name__ == "__main__":
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     val_not_improved = 0
-                    torch.save(model.state_dict(), 'blob_factor/best_model2.pth')
+                    torch.save(model.state_dict(), 'blob_factor/best_model.pth')
                 else:
                     val_not_improved += 1
-                if val_not_improved > 20:
-                    print('Early stopping')
-                    break
+                # if val_not_improved > 20:
+                #     print('Early stopping')
+                #     break
     
     # torch.save(model.state_dict(), 'blob_factor/factor_model.pth')
 
@@ -208,14 +234,14 @@ if __name__ == "__main__":
 
     
     model = ExtinctionModel(input_features, hidden_units, output_features).to('cuda')
-    model.load_state_dict(torch.load('blob_factor/best_model2.pth'))
+    model.load_state_dict(torch.load('blob_factor/best_model.pth'))
     model.eval() 
 
     with torch.no_grad():
         gt = []
         predict = []
         plt_thickness = torch.tensor(np.linspace(0.001, 0.05, 50), dtype=torch.float32, device='cuda').unsqueeze(1)/ 0.05
-        for i in range(105):
+        for i in range(dataset_size):
             plt_ext_coeff = mixture_to_extinction_rgb(mixtures)[i].unsqueeze(0)
             plt_thickness_ = plt_thickness.repeat(1, plt_ext_coeff.shape[0]).view(-1, 1)
             plt_ext_coeff_ = plt_ext_coeff.repeat(plt_thickness.shape[0], 1)
@@ -225,12 +251,13 @@ if __name__ == "__main__":
             gt.append(factors[i].cpu().numpy())
             predict.append(plt_predict)
 
+
         # plot 7*15 subplots in one figure
         plt.figure(figsize=(15, 7))
-        for i in range(105):
+        for i in range(dataset_size):
             plt.subplot(7, 15, i+1)
-            plt.plot(plt_thickness.cpu().numpy() * 0.05, predict[i], color='red', label='Predicted')
-            plt.plot(plt_thickness.cpu().numpy() * 0.05, gt[i], color = 'blue',label='True')
+            plt.plot(plt_thickness.cpu().numpy() * 0.05, predict[i][:,1] * 200.0, color='red', label='Predicted')
+            plt.plot(plt_thickness.cpu().numpy() * 0.05, gt[i][:,1], color = 'blue',label='True')
             #  don't show the x and y tick
             plt.xticks([])
             plt.yticks([])
@@ -243,7 +270,27 @@ if __name__ == "__main__":
         # plt.xlabel('Thickness')
         # plt.ylabel('Factors')
         # plt.legend()
-        plt.savefig('blob_factor/extinction_model.png')
+        plt.savefig('blob_factor/extinction_model_z.png')
+
+                # plot 7*15 subplots in one figure
+        plt.figure(figsize=(15, 7))
+        for i in range(dataset_size):
+            plt.subplot(7, 15, i+1)
+            plt.plot(plt_thickness.cpu().numpy() * 0.05, predict[i][:,0]*20.0, color='red', label='Predicted')
+            plt.plot(plt_thickness.cpu().numpy() * 0.05, gt[i][:,0], color = 'blue',label='True')
+            #  don't show the x and y tick
+            plt.xticks([])
+            plt.yticks([])
+            # plt.xlabel('Thickness')
+            # plt.ylabel('Factors')
+
+        # plt.figure()
+        # plt.plot(test_thickness.cpu().numpy(), predicted, label='Predicted')
+        # plt.plot(test_thickness.cpu().numpy(), test_targets.cpu().numpy(), label='True')
+        # plt.xlabel('Thickness')
+        # plt.ylabel('Factors')
+        # plt.legend()
+        plt.savefig('blob_factor/extinction_model_xy.png')
 
 
 

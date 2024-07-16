@@ -31,5 +31,6 @@ checker70
 lego/points3d.ply
 blob_factor
 blob_factor_km
-blob_factor_albedo_spec
-blob_factor_albedo_rgb
+blob_factor_albedo_rgb_new
+blob_factor_albedo_spec_new
+blob_factor_albedo_rgb_old
