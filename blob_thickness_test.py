@@ -147,6 +147,50 @@ def ink_to_RGB(mix, H, W, scale_z):
 
 
 
+def ink_to_albedo(mix, H, W):
+    '''
+    mix: (H*W,6) array of ink mixtures
+    output: (3,H,W) array of RGB values
+    
+    '''
+    # mix: (H*W,6) array of ink mixtures
+    # C, H, W = mix.shape
+    # mix = mix.permute(1,2,0).view(-1,C)
+
+    # no transparent and white ink
+    # mix = mix[:,:4]
+    mix =  mix
+
+    residual = 1.0 - mix.sum(dim=1)
+
+    mix[:,5] += residual
+
+    if (mix < 0.0).any():
+        mask = torch.nonzero(mix < 0.0)
+        print(mask)
+        print(mix[mask[0]])
+        # print(temp[mask[0]])
+        assert False, "Negative ink concentration inside ink_to_RGB"
+    
+    # mix: (H*W,6) array of ink mixtures
+    # K
+    mix_K = mix @ INK.absorption_RGB
+    # S
+    mix_S = mix @ INK.scattering_RGB
+
+    if torch.isnan( mix_S / (mix_K + mix_S + 1e-8)).any():
+        temp =  mix_S / (mix_K + mix_S + 1e-8)
+        mask = torch.nonzero(torch.isnan(temp))
+        # print(R_mix.shape)
+        print(mask)
+        print(temp[mask[0]])
+        assert False, "albedo has nan"
+
+    albedo =  mix_S / (mix_K + mix_S + 1e-8)
+    sRGB = torch.clip(albedo,0,1).view(H, W, 3).permute(2,0,1)
+    return sRGB
+
+
 
 def get_one_blob(scale_z,idx):
 
@@ -343,6 +387,7 @@ def get_3_blob(scale_z,idx):
         depths,
         radii,
         conics,
+        cov1d,
         compensation,
         num_tiles_hit,
         cov3d,
@@ -398,10 +443,10 @@ def get_3_blob(scale_z,idx):
     C, H, W = final_ink_mix.shape
     final_ink_mix = final_ink_mix.permute(1,2,0).view(-1,C)
 
-    out_img = ink_to_RGB(final_ink_mix, H, W,scale_z)
+    out_img = ink_to_albedo(final_ink_mix, H, W)
 
 
-    parent_path = "blob3_thickness_test"
+    parent_path = "blob3_thickness_test_albedo"
     rasterize_path = os.path.join(parent_path, "rasterize")
     alpha_path = os.path.join(parent_path, "alpha")
     slice_path = os.path.join(parent_path, "slice")
@@ -1136,34 +1181,34 @@ if __name__ == "__main__":
 
     # merge_images(image_folder, output_image, image_size, grid_size)
 
-    # thickness factor optimization
-    scales_z = np.linspace(0.001, 0.1, 20)
-    scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
-    factors = []
-    for idx, scale_z in enumerate(scales_z):
-        f = thickness_factor_optimization(scale_z, idx)
-        factors.append(f.detach().cpu().numpy())
+    # # thickness factor optimization
+    # scales_z = np.linspace(0.001, 0.1, 20)
+    # scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
+    # factors = []
+    # for idx, scale_z in enumerate(scales_z):
+    #     f = thickness_factor_optimization(scale_z, idx)
+    #     factors.append(f.detach().cpu().numpy())
     
-    mean_scale = 0.0050642
-    f = thickness_factor_optimization(mean_scale, len(scales_z))
-    factors.append(f.detach().cpu().numpy())
+    # mean_scale = 0.0050642
+    # f = thickness_factor_optimization(mean_scale, len(scales_z))
+    # factors.append(f.detach().cpu().numpy())
 
-    # set a new figure
-    plt.figure()
-    plt.plot(factors)
-    plt.savefig("blob_thickness_factor/factors_cyan.png")
+    # # set a new figure
+    # plt.figure()
+    # plt.plot(factors)
+    # plt.savefig("blob_thickness_factor/factors_cyan.png")
    
 
 
-    # # 3 blobs test
-    # scales_z = np.linspace(0.001, 0.1, 20)
-    # scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
-    # for idx, scale_z in enumerate(scales_z):
-    #     viewpoint_camera = get_3_blob(scale_z,idx)
-    #     # voxel_splatting([200,200,200], viewpoint_camera, "blob3_thickness_test", scale_z, idx)
-    # mean_scale = 0.0050642
-    # viewpoint_camera = get_3_blob(mean_scale, len(scales_z))
-    # # voxel_splatting([200,200,200], viewpoint_camera, "blob3_thickness_test", scale_z, idx)
+    # 3 blobs test
+    scales_z = np.linspace(0.001, 0.1, 20)
+    scales_z = np.concatenate([scales_z, np.linspace(0.1, 1, 20)])
+    for idx, scale_z in enumerate(scales_z):
+        viewpoint_camera = get_3_blob(scale_z,idx)
+        voxel_splatting([200,200,200], viewpoint_camera, "blob3_thickness_test_albedo", scale_z, idx)
+    mean_scale = 0.0050642
+    viewpoint_camera = get_3_blob(mean_scale, len(scales_z))
+    # voxel_splatting([200,200,200], viewpoint_camera, "blob3_thickness_test", scale_z, idx)
 
 
 
