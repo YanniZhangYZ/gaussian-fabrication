@@ -605,7 +605,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
         else:
             blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB / 255.0], dim=1)
-            blob_factors = blob_factor_model(blob_model_input) * torch.tensor([20.0, 200.0], dtype=torch.float32, device='cuda')
+            blob_factors = blob_factor_model(blob_model_input) * torch.tensor([20.0, 60.0], dtype=torch.float32, device='cuda')
             transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors[:,1][:,None] *6).mean(dim=1)
 
             conics = conics_.clone()
@@ -990,7 +990,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
                 mix_extinction_RGB = mix_absorption_RGB + mix_scattering_RGB
                 with torch.no_grad():
                     blob_model_input = torch.cat([torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] / 0.05 , mix_extinction_RGB/255.0], dim=1)
-                    blob_factors = blob_factor_model(blob_model_input) * torch.tensor([20.0, 200.0], dtype=torch.float32, device='cuda')
+                    blob_factors = blob_factor_model(blob_model_input) * torch.tensor([20.0, 60.0], dtype=torch.float32, device='cuda')
                 # transmittance = torch.exp(-mix_extinction_RGB * torch.sqrt(cov1d -  5e-3 + 1e-8)[:,None] * blob_factors * 6).mean(dim=1)
             
 
