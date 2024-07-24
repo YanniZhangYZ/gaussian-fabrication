@@ -526,23 +526,23 @@ def voxel_splatting( gaussians: GaussianModel, dimensions: tuple, viewcameras: l
     # ================Rendering scene================
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=0)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 1024, view_idx=0)
 
     
     camera_dict = get_camera_dict(viewcameras[73])
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=1)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 1024, view_idx=1)
 
     camera_dict = get_camera_dict(viewcameras[64])
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=2)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 1024, view_idx=2)
 
     camera_dict = get_camera_dict(viewcameras[95])
     print("Rendering scene")
 
-    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 64, view_idx=3)
+    render_mitsuba_scene(scene_dict,camera_dict, np.array([H,W,D])*voxel_size, filepath =  os.path.join(model_path,"mitsuba","render"),set_spp = 1024, view_idx=3)
 
     
     return 0
@@ -557,7 +557,7 @@ def mitsuba_gaussians(dataset : ModelParams, iteration : int, pipeline : Pipelin
 
         g_opacity = gaussians.get_opacity.detach().cpu().numpy()
         HELPER.debug_histogram(g_opacity, os.path.join(dataset.model_path,"mitsuba","render","opacity_histogram_g_blob.png"))
-        voxel_splatting(gaussians,[200,200,200], cameras, dataset.model_path)
+        voxel_splatting(gaussians,[400,400,400], cameras, dataset.model_path)
 
 
 

@@ -53,7 +53,7 @@ def debug_plot(pos, debug_color, debug_alpha, path):
     plt.savefig(path)
 
 
-def ink_to_RGB(mix, effective_trans, H, W):
+def ink_to_RGB(mix, H, W):
     '''
     mix: (H*W,6) array of ink mixtures
     output: (3,H,W) array of RGB values
@@ -148,7 +148,7 @@ def ink_to_RGB(mix, effective_trans, H, W):
     #                 1.055 * torch.pow(sRGB, 1 / 2.4) - 0.055)
 
 
-    sRGB = sRGB.view(H, W, 3).permute(2,0,1) + effective_trans * D56_light_intensity.view(3,1,1)
+    sRGB = sRGB.view(H, W, 3).permute(2,0,1)
     sRGB = torch.clip(sRGB,0,1)
 
     # sRGB = torch.clip(sRGB,0,1).view(H, W, 3).permute(2,0,1)
@@ -538,6 +538,8 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
 
+    loss_record = []
+
     for i in range(opt.iterations):
         #TODO
         if not (gaussians.get_rotation.norm(dim=-1) - 1 < 1e-6).all():
@@ -824,6 +826,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
         optimizer.step()
         # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}")
         print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()}, z_loss:{0.001 * z_loss}")
+        loss_record.append(loss.item())
         # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()},ne_mean:{0.1 * norm_times_exinction.mean().item()}")
         # print(f"Iteration {i + 1}/{opt.iterations}, Loss: {loss.item()}, loss1: {loss1.item()},abs_sum:{ 0.001 * scale_variance.sum().item()}")
 
@@ -837,6 +840,18 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
         if i == opt.iterations - 1:
+            # plot loss
+            plt.figure()
+            plt.plot(loss_record)
+            plt.xticks(np.arange(0, opt.iterations, step=1000))
+            plt.xlabel("Iterations")
+            plt.ylabel("Loss")
+            plt.savefig(os.path.join(dataset.model_path, "result_imgs", "loss.png"))
+            np.save(os.path.join(dataset.model_path, "result_imgs", "loss.npy"), np.array(loss_record))
+
+
+
+
             imgs_path = os.path.join(dataset.model_path, "result_imgs")
             if not os.path.exists(imgs_path):
                 os.makedirs(imgs_path)
@@ -948,7 +963,7 @@ def training(dataset : ModelParams, opt, pipe, testing_iterations, saving_iterat
 
 
             cams = scene.getTrainCameras().copy()
-            for idx in [69,73,64]:
+            for idx in [69,73,64,95]:
                 viewpoint_camera = cams[idx]
 
                 
