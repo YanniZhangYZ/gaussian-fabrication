@@ -34,3 +34,9 @@ blob_factor_km
 blob_factor_albedo_rgb_new
 blob_factor_albedo_spec_new
 blob_factor_albedo_rgb_old
+3dgs_mic_train
+3dgs_chair_train
+3dgs_ficus_train
+mic
+chair
+ficus
