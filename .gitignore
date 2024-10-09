@@ -14,7 +14,9 @@ diff_rasterization/diff_rast.egg-info
 diff_rasterization/dist
 tensorboard_3d
 screenshots
-3dgs_lego_train
+3dgs_lego_train/point_cloud
+3dgs_lego_train/result_imgs
+3dgs_lego_train/result_imgs_old
 Two_blobs_torch
 checkerboard_
 checkerboard

@@ -1,0 +1,1 @@
+Namespace(sh_degree=0, source_path='/home/yanni/Thesis/gaussian-fabrication/lego', model_path='3dgs_lego_train', images='images', resolution=-1, white_background=True, data_device='cuda', eval=True)
